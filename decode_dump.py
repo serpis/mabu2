@@ -6,6 +6,7 @@ import argparse
 import bisect
 import json
 import math
+import struct
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -261,10 +262,18 @@ def compute_field_stats(values: list[tuple[int, ...]]) -> list[dict[str, Any]]:
 def family_label(direction: str, key: tuple[int, ...]) -> str:
     if direction == "rx" and len(key) == 3 and key[0] == 4 and key[1] == 0x01:
         return "set_position_target"
+    if direction == "rx" and key == (1, 0x47):
+        return "get_pid_request"
+    if direction == "rx" and len(key) >= 2 and key[0] == 85 and key[1] == 0x50:
+        return "set_pid_gains"
     if direction == "tx" and key == (9, 0x01, 0x00):
         return "position_feedback"
     if direction == "tx" and key == (3, 0x02, 0x6E):
         return "active_mask_echo"
+    if direction == "tx" and len(key) >= 2 and key[0] == 85 and key[1] == 0x47:
+        return "pid_report"
+    if direction == "tx" and len(key) >= 2 and key[0] == 85 and key[1] == 0x50:
+        return "pid_write_echo"
     return "generic"
 
 
@@ -402,10 +411,58 @@ def decode_packet(
             "name": mask_names.get(mask),
         }
 
+    if packet.direction == "rx" and payload == [0x47]:
+        return {
+            "kind": "get_pid_request",
+        }
+
+    if len(payload) == 85 and payload[0] in (0x47, 0x50):
+        gains = decode_pid_payload(payload, tx_channel_names)
+        if packet.direction == "rx" and payload[0] == 0x50:
+            kind = "set_pid_gains"
+        elif packet.direction == "tx" and payload[0] == 0x47:
+            kind = "pid_report"
+        elif packet.direction == "tx" and payload[0] == 0x50:
+            kind = "pid_write_echo"
+        else:
+            kind = "pid_blob"
+        return {
+            "kind": kind,
+            "opcode": payload[0],
+            "gains": gains,
+        }
+
     return {
         "kind": "generic",
         "payload": payload,
     }
+
+
+def decode_pid_payload(
+    payload: list[int],
+    tx_channel_names: dict[int, str],
+) -> list[dict[str, Any]]:
+    body = bytes(payload[1:])
+    if len(body) % 12 != 0:
+        return [{"channel_index": -1, "name": None, "raw_hex": body.hex()}]
+
+    gains: list[dict[str, Any]] = []
+    channel_count = len(body) // 12
+    for channel_index in range(channel_count):
+        offset = channel_index * 12
+        p_gain, i_gain, d_gain = struct.unpack(">fff", body[offset : offset + 12])
+        payload_index = channel_index + 2
+        gains.append(
+            {
+                "channel_index": channel_index,
+                "payload_index": payload_index,
+                "name": tx_channel_names.get(payload_index),
+                "p": p_gain,
+                "i": i_gain,
+                "d": d_gain,
+            }
+        )
+    return gains
 
 
 def packet_to_dict(
@@ -639,6 +696,23 @@ def format_packet(packet: dict[str, Any]) -> str:
     if decoded["kind"] == "active_mask_echo":
         name = decoded.get("name") or "unknown"
         return f"{prefix} mask={decoded['mask_hex']} ({name})"
+
+    if decoded["kind"] == "get_pid_request":
+        return prefix
+
+    if decoded["kind"] in {"set_pid_gains", "pid_report", "pid_write_echo", "pid_blob"}:
+        parts = []
+        for gain in decoded.get("gains", []):
+            name = gain.get("name") or f"ch{gain['channel_index']}"
+            if "p" in gain:
+                parts.append(
+                    f"{name}(P={gain['p']:.6g}, I={gain['i']:.6g}, D={gain['d']:.6g})"
+                )
+            else:
+                parts.append(name)
+        if parts:
+            return f"{prefix} " + ", ".join(parts)
+        return prefix
 
     return f"{prefix} payload={packet['payload_hex']}"
 
