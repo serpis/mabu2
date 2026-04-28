@@ -8,6 +8,23 @@ Fokus här är:
 - sådant som är starkt indicerat men fortfarande är tolkning
 - sådant som fortfarande är oklart
 
+## Kort sammanfattning
+
+- framing: `FA 00`, `payload_length` i byte `2`, total längd `payload_length + 5`, checksumma `Fletcher-16` lagrad som `[sum2, sum1]`
+- riktning: `RX` ser ut att vara huvudenhet -> motorbord, `TX` motorbord -> huvudenhet
+- positionskommando: `01 <mask> 01 <value>`
+- positionsfeedback: `01 00 <7 kanaler>`
+- kanalordning: `0x40 eyelid_left`, `0x20 eyelid_right`, `0x10 eye_leftright`, `0x08 eye_updown`, `0x04 neck_elevation`, `0x02 neck_rotation`, `0x01 neck_tilt`
+- power/enable: `4F <mask>`
+- kalibreringsstart: `43 <mask>`
+- kalibreringsresultat: `43 00` = success, `43 <failed_mask> <status>` = fail
+- kända kalibreringsfel: `0x73 = range_too_small`, `0x62 = center_voltage_too_high`
+- kalibreringsvärden: `42` läser tillbaka `7 x (min, max, range)` som little-endian `uint16`
+- VR-läsning: `40`, versionsläsning: `56`
+- PID: `47` read, `50` write, `52` reset; payloaden är `21` big-endian `float32` = `7 x (P, I, D)`
+- rörelsescript: längre `0x01`-paket används för animationer och testcykler
+- ingen observerad write-opcode för kalibreringsvärden; min/max ser ut att sättas av själva kalibreringen
+
 Underlag som använts:
 
 - [dumps/dump.json](dumps/dump.json)
