@@ -1,0 +1,193 @@
+{
+  "format": "sigrok-uart-bytes/v2",
+  "generated_at": "2026-04-28T06:05:18.752664+00:00",
+  "capture": {
+    "driver": "fx2lafw",
+    "source": "dumps/version_id.sr",
+    "baudrate": 57600,
+    "mode": "8N1",
+    "data_bits": 8,
+    "parity": "none",
+    "stop_bits": 1.0,
+    "samplerate_hz": 2000000,
+    "samplerate_sigrok": "2m",
+    "rx_channel": "D5",
+    "tx_channel": "D7",
+    "invert_rx": false,
+    "invert_tx": false,
+    "group_sequences": false
+  },
+  "files": {
+    "json": "dumps/version_id.json",
+    "sigrok_session": "dumps/version_id.sr"
+  },
+  "rx_bytes": [
+    {
+      "index": 1,
+      "timestamp_sample": 282704,
+      "timestamp_seconds": 0.141352,
+      "end_sample": 282843,
+      "end_seconds": 0.1414215,
+      "value": 250,
+      "hex": "FA",
+      "ascii": "\\xFA"
+    },
+    {
+      "index": 2,
+      "timestamp_sample": 282878,
+      "timestamp_seconds": 0.141439,
+      "end_sample": 283016,
+      "end_seconds": 0.141508,
+      "value": 0,
+      "hex": "00",
+      "ascii": "\\x00"
+    },
+    {
+      "index": 3,
+      "timestamp_sample": 283051,
+      "timestamp_seconds": 0.1415255,
+      "end_sample": 283190,
+      "end_seconds": 0.141595,
+      "value": 1,
+      "hex": "01",
+      "ascii": "\\x01"
+    },
+    {
+      "index": 4,
+      "timestamp_sample": 283224,
+      "timestamp_seconds": 0.141612,
+      "end_sample": 283364,
+      "end_seconds": 0.141682,
+      "value": 86,
+      "hex": "56",
+      "ascii": "V"
+    },
+    {
+      "index": 5,
+      "timestamp_sample": 283398,
+      "timestamp_seconds": 0.141699,
+      "end_sample": 283537,
+      "end_seconds": 0.1417685,
+      "value": 68,
+      "hex": "44",
+      "ascii": "D"
+    },
+    {
+      "index": 6,
+      "timestamp_sample": 283572,
+      "timestamp_seconds": 0.141786,
+      "end_sample": 283711,
+      "end_seconds": 0.1418555,
+      "value": 82,
+      "hex": "52",
+      "ascii": "R"
+    }
+  ],
+  "tx_bytes": [
+    {
+      "index": 1,
+      "timestamp_sample": 283796,
+      "timestamp_seconds": 0.141898,
+      "end_sample": 283935,
+      "end_seconds": 0.1419675,
+      "value": 250,
+      "hex": "FA",
+      "ascii": "\\xFA"
+    },
+    {
+      "index": 2,
+      "timestamp_sample": 283967,
+      "timestamp_seconds": 0.1419835,
+      "end_sample": 284106,
+      "end_seconds": 0.142053,
+      "value": 0,
+      "hex": "00",
+      "ascii": "\\x00"
+    },
+    {
+      "index": 3,
+      "timestamp_sample": 284138,
+      "timestamp_seconds": 0.142069,
+      "end_sample": 284278,
+      "end_seconds": 0.142139,
+      "value": 5,
+      "hex": "05",
+      "ascii": "\\x05"
+    },
+    {
+      "index": 4,
+      "timestamp_sample": 284310,
+      "timestamp_seconds": 0.142155,
+      "end_sample": 284448,
+      "end_seconds": 0.142224,
+      "value": 86,
+      "hex": "56",
+      "ascii": "V"
+    },
+    {
+      "index": 5,
+      "timestamp_sample": 284480,
+      "timestamp_seconds": 0.14224,
+      "end_sample": 284620,
+      "end_seconds": 0.14231,
+      "value": 64,
+      "hex": "40",
+      "ascii": "@"
+    },
+    {
+      "index": 6,
+      "timestamp_sample": 284652,
+      "timestamp_seconds": 0.142326,
+      "end_sample": 284790,
+      "end_seconds": 0.142395,
+      "value": 24,
+      "hex": "18",
+      "ascii": "\\x18"
+    },
+    {
+      "index": 7,
+      "timestamp_sample": 284823,
+      "timestamp_seconds": 0.1424115,
+      "end_sample": 284962,
+      "end_seconds": 0.142481,
+      "value": 245,
+      "hex": "F5",
+      "ascii": "\\xF5"
+    },
+    {
+      "index": 8,
+      "timestamp_sample": 284994,
+      "timestamp_seconds": 0.142497,
+      "end_sample": 285133,
+      "end_seconds": 0.1425665,
+      "value": 195,
+      "hex": "C3",
+      "ascii": "\\xC3"
+    },
+    {
+      "index": 9,
+      "timestamp_sample": 285165,
+      "timestamp_seconds": 0.1425825,
+      "end_sample": 285304,
+      "end_seconds": 0.142652,
+      "value": 158,
+      "hex": "9E",
+      "ascii": "\\x9E"
+    },
+    {
+      "index": 10,
+      "timestamp_sample": 285336,
+      "timestamp_seconds": 0.142668,
+      "end_sample": 285475,
+      "end_seconds": 0.1427375,
+      "value": 104,
+      "hex": "68",
+      "ascii": "h"
+    }
+  ],
+  "byte_count": {
+    "rx": 6,
+    "tx": 10,
+    "total": 16
+  }
+}

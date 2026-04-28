@@ -262,16 +262,40 @@ def compute_field_stats(values: list[tuple[int, ...]]) -> list[dict[str, Any]]:
 def family_label(direction: str, key: tuple[int, ...]) -> str:
     if direction == "rx" and len(key) == 3 and key[0] == 4 and key[1] == 0x01:
         return "set_position_target"
+    if direction == "rx" and len(key) >= 2 and key[0] == 2 and key[1] == 0x4F:
+        return "set_power_mask"
+    if direction == "rx" and len(key) >= 2 and key[0] == 2 and key[1] == 0x43:
+        return "calibration_request"
+    if direction == "rx" and key == (1, 0x40):
+        return "read_vr_values_request"
+    if direction == "rx" and key == (1, 0x42):
+        return "read_calibration_values_request"
     if direction == "rx" and key == (1, 0x47):
         return "get_pid_request"
+    if direction == "rx" and key == (1, 0x52):
+        return "reset_pid_values_request"
+    if direction == "rx" and key == (1, 0x56):
+        return "read_version_request"
     if direction == "rx" and len(key) >= 2 and key[0] == 85 and key[1] == 0x50:
         return "set_pid_gains"
+    if direction == "rx" and len(key) >= 3 and key[0] > 4 and key[1] != 0x00 and key[2] != 0x01:
+        return "motion_script"
+    if direction == "tx" and len(key) >= 2 and key[0] == 2 and key[1] == 0x4F:
+        return "set_power_mask_echo"
+    if direction == "tx" and len(key) >= 2 and key[0] in (2, 3) and key[1] == 0x43:
+        return "calibration_result"
+    if direction == "tx" and len(key) >= 2 and key[0] == 43 and key[1] == 0x42:
+        return "calibration_values_report"
+    if direction == "tx" and key == (5, 0x56, 0x40):
+        return "version_id_report"
     if direction == "tx" and key == (9, 0x01, 0x00):
         return "position_feedback"
     if direction == "tx" and key == (3, 0x02, 0x6E):
         return "active_mask_echo"
     if direction == "tx" and len(key) >= 2 and key[0] == 85 and key[1] == 0x47:
         return "pid_report"
+    if direction == "tx" and len(key) >= 2 and key[0] == 85 and key[1] == 0x52:
+        return "reset_pid_values_report"
     if direction == "tx" and len(key) >= 2 and key[0] == 85 and key[1] == 0x50:
         return "pid_write_echo"
     return "generic"
@@ -411,9 +435,85 @@ def decode_packet(
             "name": mask_names.get(mask),
         }
 
+    if len(payload) == 2 and payload[0] == 0x4F:
+        mask_info = decode_mask(mask=payload[1], mask_names=mask_names)
+        return {
+            "kind": "set_power_mask" if packet.direction == "rx" else "set_power_mask_echo",
+            "opcode": payload[0],
+            **mask_info,
+        }
+
+    if packet.direction == "rx" and len(payload) == 2 and payload[0] == 0x43:
+        mask_info = decode_mask(mask=payload[1], mask_names=mask_names)
+        return {
+            "kind": "calibration_request",
+            "opcode": payload[0],
+            **mask_info,
+        }
+
+    if packet.direction == "tx" and len(payload) == 2 and payload[0] == 0x43:
+        return {
+            "kind": "calibration_result",
+            "opcode": payload[0],
+            "success": payload[1] == 0x00,
+            "result_code": payload[1],
+            "result_code_hex": f"0x{payload[1]:02X}",
+            "result_name": "success" if payload[1] == 0x00 else None,
+        }
+
+    if packet.direction == "tx" and len(payload) == 3 and payload[0] == 0x43:
+        mask_info = decode_mask(mask=payload[1], mask_names=mask_names)
+        return {
+            "kind": "calibration_result",
+            "opcode": payload[0],
+            "success": False,
+            **mask_info,
+            "status": payload[2],
+            "status_hex": f"0x{payload[2]:02X}",
+            "status_name": calibration_status_name(payload[2]),
+        }
+
+    if packet.direction == "rx" and payload == [0x40]:
+        return {
+            "kind": "read_vr_values_request",
+        }
+
+    if packet.direction == "rx" and payload == [0x42]:
+        return {
+            "kind": "read_calibration_values_request",
+        }
+
     if packet.direction == "rx" and payload == [0x47]:
         return {
             "kind": "get_pid_request",
+        }
+
+    if packet.direction == "rx" and payload == [0x52]:
+        return {
+            "kind": "reset_pid_values_request",
+        }
+
+    if packet.direction == "rx" and payload == [0x56]:
+        return {
+            "kind": "read_version_request",
+        }
+
+    if packet.direction == "rx" and len(payload) > 4 and payload[0] == 0x01:
+        return decode_motion_script_payload(payload, mask_names, tx_channel_names)
+
+    if packet.direction == "tx" and len(payload) == 43 and payload[0] == 0x42:
+        return {
+            "kind": "calibration_values_report",
+            "opcode": payload[0],
+            "triplets": decode_calibration_triplets(payload[1:], tx_channel_names),
+        }
+
+    if packet.direction == "tx" and len(payload) == 5 and payload[0] == 0x56:
+        version_value = struct.unpack(">f", bytes(payload[1:5]))[0]
+        return {
+            "kind": "version_id_report",
+            "opcode": payload[0],
+            "version_float": version_value,
         }
 
     if len(payload) == 85 and payload[0] in (0x47, 0x50):
@@ -432,10 +532,56 @@ def decode_packet(
             "gains": gains,
         }
 
+    if packet.direction == "tx" and len(payload) == 85 and payload[0] == 0x52:
+        return {
+            "kind": "reset_pid_values_report",
+            "opcode": payload[0],
+            "gains": decode_pid_payload(payload, tx_channel_names),
+        }
+
     return {
         "kind": "generic",
         "payload": payload,
     }
+
+
+def decode_mask(mask: int, mask_names: dict[int, str]) -> dict[str, Any]:
+    members: list[dict[str, Any]] = []
+    remaining = mask
+    for bit, name in sorted(mask_names.items(), reverse=True):
+        if mask & bit:
+            members.append(
+                {
+                    "bit": bit,
+                    "bit_hex": f"0x{bit:02X}",
+                    "name": name,
+                }
+            )
+            remaining &= ~bit
+
+    exact_name = mask_names.get(mask)
+    if exact_name is not None:
+        label = exact_name
+    elif members and remaining == 0 and len(members) == len(mask_names):
+        label = "all_channels"
+    else:
+        label = None
+
+    return {
+        "mask": mask,
+        "mask_hex": f"0x{mask:02X}",
+        "name": label,
+        "members": members,
+        "unknown_mask_bits": remaining,
+        "unknown_mask_bits_hex": f"0x{remaining:02X}",
+    }
+
+
+def calibration_status_name(status: int) -> str | None:
+    return {
+        0x62: "center_voltage_too_high",
+        0x73: "range_too_small",
+    }.get(status)
 
 
 def decode_pid_payload(
@@ -463,6 +609,124 @@ def decode_pid_payload(
             }
         )
     return gains
+
+
+def decode_calibration_triplets(
+    payload: list[int],
+    tx_channel_names: dict[int, str],
+) -> list[dict[str, Any]]:
+    if len(payload) % 6 != 0:
+        return [{"channel_index": -1, "raw_hex": bytes(payload).hex()}]
+
+    triplets: list[dict[str, Any]] = []
+    channel_count = len(payload) // 6
+    for channel_index in range(channel_count):
+        offset = channel_index * 6
+        a = payload[offset] | (payload[offset + 1] << 8)
+        b = payload[offset + 2] | (payload[offset + 3] << 8)
+        c = payload[offset + 4] | (payload[offset + 5] << 8)
+        payload_index = channel_index + 2
+        triplets.append(
+            {
+                "channel_index": channel_index,
+                "payload_index": payload_index,
+                "name": tx_channel_names.get(payload_index),
+                "minimum": a,
+                "maximum": b,
+                "measured_range": c,
+                "range_from_minmax": b - a,
+                "range_matches_minmax": (b - a) == c,
+                "value_a": a,
+                "value_b": b,
+                "value_c": c,
+            }
+        )
+    return triplets
+
+
+def decode_motion_script_payload(
+    payload: list[int],
+    mask_names: dict[int, str],
+    tx_channel_names: dict[int, str],
+) -> dict[str, Any]:
+    mask_info = decode_mask(mask=payload[1], mask_names=mask_names)
+    body = payload[2:]
+    explicit_length = body[0] if body else None
+
+    if mask_info.get("name") == "all_channels" and body[:1] == [0x01] and len(body) == 8:
+        values = []
+        for channel_index, value in enumerate(body[1:]):
+            payload_index = channel_index + 2
+            values.append(
+                {
+                    "channel_index": channel_index,
+                    "payload_index": payload_index,
+                    "name": tx_channel_names.get(payload_index),
+                    "value": value,
+                }
+            )
+        return {
+            "kind": "pose_preset",
+            "opcode": payload[0],
+            **mask_info,
+            "mode": body[0],
+            "values": values,
+        }
+
+    if explicit_length is not None and explicit_length == len(body) - 1 and explicit_length % 2 == 0:
+        pairs = []
+        script_bytes = body[1:]
+        for index in range(0, len(script_bytes), 2):
+            pairs.append(
+                {
+                    "step_index": index // 2,
+                    "value": script_bytes[index],
+                    "arg": script_bytes[index + 1],
+                }
+            )
+        return {
+            "kind": "motion_script",
+            "opcode": payload[0],
+            **mask_info,
+            "script_length": explicit_length,
+            "steps": pairs,
+        }
+
+    if len(mask_info["members"]) == 2 and explicit_length is not None and explicit_length & 0x80:
+        point_count = explicit_length & 0x7F
+        script_bytes = body[1:]
+        if len(script_bytes) == point_count * 3:
+            channel_a, channel_b = mask_info["members"]
+            points = []
+            for index in range(point_count):
+                offset = index * 3
+                value_a = script_bytes[offset]
+                value_b = script_bytes[offset + 1]
+                duration = script_bytes[offset + 2]
+                points.append(
+                    {
+                        "point_index": index,
+                        "channel_a_name": channel_a["name"],
+                        "channel_b_name": channel_b["name"],
+                        "channel_a_value": value_a,
+                        "channel_b_value": value_b,
+                        "duration": duration,
+                    }
+                )
+            return {
+                "kind": "motion_script_2ch",
+                "opcode": payload[0],
+                **mask_info,
+                "point_count": point_count,
+                "points": points,
+            }
+
+    return {
+        "kind": "motion_script_raw",
+        "opcode": payload[0],
+        **mask_info,
+        "data_bytes": body,
+    }
 
 
 def packet_to_dict(
@@ -697,10 +961,41 @@ def format_packet(packet: dict[str, Any]) -> str:
         name = decoded.get("name") or "unknown"
         return f"{prefix} mask={decoded['mask_hex']} ({name})"
 
-    if decoded["kind"] == "get_pid_request":
+    if decoded["kind"] in {"set_power_mask", "set_power_mask_echo", "calibration_request"}:
+        return f"{prefix} mask={format_mask(decoded)}"
+
+    if decoded["kind"] == "calibration_result":
+        if decoded.get("success"):
+            return f"{prefix} success"
+        if "status_hex" not in decoded:
+            return f"{prefix} result={decoded['result_code_hex']}"
+        status_note = decoded.get("status_name")
+        if status_note:
+            return (
+                f"{prefix} failed_mask={format_mask(decoded)} "
+                f"status={decoded['status_hex']} ({status_note})"
+            )
+        return (
+            f"{prefix} failed_mask={format_mask(decoded)} "
+            f"status={decoded['status_hex']}"
+        )
+
+    if decoded["kind"] in {
+        "read_vr_values_request",
+        "read_calibration_values_request",
+        "get_pid_request",
+        "reset_pid_values_request",
+        "read_version_request",
+    }:
         return prefix
 
-    if decoded["kind"] in {"set_pid_gains", "pid_report", "pid_write_echo", "pid_blob"}:
+    if decoded["kind"] in {
+        "set_pid_gains",
+        "pid_report",
+        "pid_write_echo",
+        "pid_blob",
+        "reset_pid_values_report",
+    }:
         parts = []
         for gain in decoded.get("gains", []):
             name = gain.get("name") or f"ch{gain['channel_index']}"
@@ -714,7 +1009,61 @@ def format_packet(packet: dict[str, Any]) -> str:
             return f"{prefix} " + ", ".join(parts)
         return prefix
 
+    if decoded["kind"] == "version_id_report":
+        return f"{prefix} version={decoded['version_float']:.3f}"
+
+    if decoded["kind"] == "calibration_values_report":
+        parts = []
+        for item in decoded.get("triplets", []):
+            name = item.get("name") or f"ch{item['channel_index']}"
+            if "minimum" in item:
+                parts.append(
+                    f"{name}(min={item['minimum']}, max={item['maximum']}, range={item['measured_range']})"
+                )
+        if parts:
+            return f"{prefix} " + ", ".join(parts)
+        return prefix
+
+    if decoded["kind"] == "pose_preset":
+        parts = []
+        for item in decoded.get("values", []):
+            name = item.get("name") or f"ch{item['channel_index']}"
+            parts.append(f"{name}={item['value']}")
+        if parts:
+            return f"{prefix} " + ", ".join(parts)
+        return prefix
+
+    if decoded["kind"] == "motion_script":
+        steps = ", ".join(
+            f"{step['step_index']}:{step['value']}/{step['arg']}"
+            for step in decoded.get("steps", [])
+        )
+        return f"{prefix} mask={format_mask(decoded)} steps=[{steps}]"
+
+    if decoded["kind"] == "motion_script_2ch":
+        points = ", ".join(
+            f"{point['point_index']}:{point['channel_a_value']}/{point['channel_b_value']}@{point['duration']}"
+            for point in decoded.get("points", [])
+        )
+        return f"{prefix} mask={format_mask(decoded)} points=[{points}]"
+
+    if decoded["kind"] == "motion_script_raw":
+        data = " ".join(f"{value:02X}" for value in decoded.get("data_bytes", []))
+        return f"{prefix} mask={format_mask(decoded)} data={data}"
+
     return f"{prefix} payload={packet['payload_hex']}"
+
+
+def format_mask(decoded: dict[str, Any]) -> str:
+    mask_hex = decoded["mask_hex"]
+    name = decoded.get("name")
+    members = decoded.get("members", [])
+    if name is not None:
+        return f"{mask_hex} ({name})"
+    if members:
+        member_names = ",".join(member["name"] for member in members)
+        return f"{mask_hex} ({member_names})"
+    return mask_hex
 
 
 def print_text_summary(result: dict[str, Any], show_packets: int) -> None:
