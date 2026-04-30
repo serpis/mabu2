@@ -16,6 +16,16 @@ from typing import Any
 SYNC_PREFIX_LEN = 2
 SYNC_SEARCH_TOP = 32
 GENERIC_REFERENCE_NAMES = {"dump"}
+REFERENCE_NAME_ALIASES = {
+    "anglemap_ldl": "eyelid_left",
+    "anglemap_ldr": "eyelid_right",
+    "anglemap_ldr2": "eyelid_right",
+    "anglemap_elr": "eye_leftright",
+    "anglemap_eud": "eye_updown",
+    "anglemap_ne": "neck_elevation",
+    "anglemap_nr": "neck_rotation",
+    "anglemap_nt": "neck_tilt",
+}
 
 
 @dataclass(frozen=True)
@@ -351,17 +361,26 @@ def normalize_name(text: str) -> str:
 
 
 def reference_preference(reference: ReferenceMapping) -> tuple[int, int, int]:
-    descriptive = 0 if reference.name in GENERIC_REFERENCE_NAMES else 1
-    return descriptive, len(reference.name), reference.tx_range
+    source_stem = normalize_name(Path(reference.source_file).stem)
+    if source_stem in REFERENCE_NAME_ALIASES:
+        source_quality = 2
+    elif reference.name in GENERIC_REFERENCE_NAMES:
+        source_quality = 0
+    else:
+        source_quality = 1
+    return source_quality, reference.tx_range, len(reference.name)
 
 
 def build_reference_mappings(directory: Path) -> list[ReferenceMapping]:
     mappings_by_mask: dict[int, ReferenceMapping] = {}
 
     for path in sorted(directory.glob("*.json")):
-        data = load_dump(path)
-        rx_result = infer_sync("rx", data["rx_bytes"])
-        tx_result = infer_sync("tx", data["tx_bytes"])
+        try:
+            data = load_dump(path)
+            rx_result = infer_sync("rx", data["rx_bytes"])
+            tx_result = infer_sync("tx", data["tx_bytes"])
+        except (KeyError, ValueError, json.JSONDecodeError):
+            continue
         mask = rx_mask_value(rx_result.packets)
         if mask is None:
             continue
@@ -376,8 +395,10 @@ def build_reference_mappings(directory: Path) -> list[ReferenceMapping]:
             continue
 
         tx_payload_index, tx_range = dominant
+        reference_name = normalize_name(path.stem)
+        reference_name = REFERENCE_NAME_ALIASES.get(reference_name, reference_name)
         candidate = ReferenceMapping(
-            name=normalize_name(path.stem),
+            name=reference_name,
             source_file=path.name,
             rx_mask=mask,
             tx_payload_index=tx_payload_index,
@@ -821,6 +842,80 @@ def correlate_active_fields(rx_packets: list[Packet], tx_packets: list[Packet]) 
     return best
 
 
+def correlate_reference_link(
+    rx_packets: list[Packet],
+    tx_packets: list[Packet],
+    references: list[ReferenceMapping],
+) -> dict[str, Any] | None:
+    position_packets = [
+        packet
+        for packet in rx_packets
+        if len(packet.payload) == 4 and packet.payload[0] == 0x01
+    ]
+    masks = {packet.payload[1] for packet in position_packets}
+    if len(masks) != 1:
+        return None
+
+    mask = next(iter(masks))
+    reference_by_mask = {reference.rx_mask: reference for reference in references}
+    reference = reference_by_mask.get(mask)
+    if reference is None:
+        return None
+
+    tx_snapshot_packets = [
+        packet for packet in tx_packets if message_family_key(packet) == (9, 0x01, 0x00)
+    ]
+    if len(position_packets) < 2 or not tx_snapshot_packets:
+        return None
+
+    tx_times = [packet.start_seconds for packet in tx_snapshot_packets]
+    rx_values: list[int] = []
+    tx_values: list[int] = []
+    offsets: list[float] = []
+    for rx_packet in position_packets:
+        probe = rx_packet.start_seconds
+        position = bisect.bisect_left(tx_times, probe)
+        candidates = []
+        for index in (position - 1, position, position + 1):
+            if 0 <= index < len(tx_snapshot_packets):
+                offset = tx_snapshot_packets[index].start_seconds - probe
+                candidates.append((abs(offset), offset, index))
+        if not candidates:
+            continue
+        _distance, offset, index = min(candidates)
+        rx_values.append(rx_packet.payload[3])
+        tx_values.append(tx_snapshot_packets[index].payload[reference.tx_payload_index])
+        offsets.append(offset)
+
+    if len(rx_values) < 2:
+        return None
+
+    rx_mean = sum(rx_values) / len(rx_values)
+    tx_mean = sum(tx_values) / len(tx_values)
+    covariance = sum(
+        (rx_value - rx_mean) * (tx_value - tx_mean)
+        for rx_value, tx_value in zip(rx_values, tx_values)
+    )
+    rx_energy = sum((value - rx_mean) ** 2 for value in rx_values)
+    tx_energy = sum((value - tx_mean) ** 2 for value in tx_values)
+    correlation = (
+        covariance / math.sqrt(rx_energy * tx_energy)
+        if rx_energy and tx_energy
+        else 0.0
+    )
+
+    return {
+        "source": "mask_reference",
+        "rx_payload_index": 3,
+        "tx_payload_index": reference.tx_payload_index,
+        "tx_channel_index": reference.tx_channel_index,
+        "correlation": correlation,
+        "mean_time_offset_ms": (sum(offsets) / len(offsets)) * 1000,
+        "tx_field_range": max(tx_values) - min(tx_values),
+        "rx_field_range": max(rx_values) - min(rx_values),
+    }
+
+
 def packet_rate_hz(packets: list[Packet]) -> float | None:
     if len(packets) < 2:
         return None
@@ -847,7 +942,11 @@ def build_result(input_path: Path, calibration_dir: Path | None) -> dict[str, An
 
     rx_families = build_families("rx", rx_result.packets)
     tx_families = build_families("tx", tx_result.packets)
-    correlation = correlate_active_fields(rx_result.packets, tx_result.packets)
+    correlation = correlate_reference_link(
+        rx_result.packets,
+        tx_result.packets,
+        references,
+    ) or correlate_active_fields(rx_result.packets, tx_result.packets)
 
     timeline = sorted(
         [

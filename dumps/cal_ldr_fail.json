@@ -1,0 +1,183 @@
+{
+  "format": "sigrok-uart-bytes/v2",
+  "generated_at": "2026-04-29T19:14:45.783744+00:00",
+  "capture": {
+    "driver": "fx2lafw",
+    "source": "cal_ldr.sr",
+    "baudrate": 57600,
+    "mode": "8N1",
+    "data_bits": 8,
+    "parity": "none",
+    "stop_bits": 1.0,
+    "samplerate_hz": 2000000,
+    "samplerate_sigrok": "2m",
+    "rx_channel": "D5",
+    "tx_channel": "D7",
+    "invert_rx": false,
+    "invert_tx": false,
+    "group_sequences": false
+  },
+  "files": {
+    "json": "cal_ldr.json",
+    "sigrok_session": "cal_ldr.sr"
+  },
+  "rx_bytes": [
+    {
+      "index": 1,
+      "timestamp_sample": 445405,
+      "timestamp_seconds": 0.2227025,
+      "end_sample": 445544,
+      "end_seconds": 0.222772,
+      "value": 250,
+      "hex": "FA",
+      "ascii": "\\xFA"
+    },
+    {
+      "index": 2,
+      "timestamp_sample": 445579,
+      "timestamp_seconds": 0.2227895,
+      "end_sample": 445718,
+      "end_seconds": 0.222859,
+      "value": 0,
+      "hex": "00",
+      "ascii": "\\x00"
+    },
+    {
+      "index": 3,
+      "timestamp_sample": 445752,
+      "timestamp_seconds": 0.222876,
+      "end_sample": 445892,
+      "end_seconds": 0.222946,
+      "value": 2,
+      "hex": "02",
+      "ascii": "\\x02"
+    },
+    {
+      "index": 4,
+      "timestamp_sample": 445926,
+      "timestamp_seconds": 0.222963,
+      "end_sample": 446065,
+      "end_seconds": 0.2230325,
+      "value": 67,
+      "hex": "43",
+      "ascii": "C"
+    },
+    {
+      "index": 5,
+      "timestamp_sample": 446100,
+      "timestamp_seconds": 0.22305,
+      "end_sample": 446238,
+      "end_seconds": 0.223119,
+      "value": 32,
+      "hex": "20",
+      "ascii": " "
+    },
+    {
+      "index": 6,
+      "timestamp_sample": 446273,
+      "timestamp_seconds": 0.2231365,
+      "end_sample": 446412,
+      "end_seconds": 0.223206,
+      "value": 147,
+      "hex": "93",
+      "ascii": "\\x93"
+    },
+    {
+      "index": 7,
+      "timestamp_sample": 446447,
+      "timestamp_seconds": 0.2232235,
+      "end_sample": 446586,
+      "end_seconds": 0.223293,
+      "value": 96,
+      "hex": "60",
+      "ascii": "`"
+    }
+  ],
+  "tx_bytes": [
+    {
+      "index": 1,
+      "timestamp_sample": 8340163,
+      "timestamp_seconds": 4.1700815,
+      "end_sample": 8340302,
+      "end_seconds": 4.170151,
+      "value": 250,
+      "hex": "FA",
+      "ascii": "\\xFA"
+    },
+    {
+      "index": 2,
+      "timestamp_sample": 8340334,
+      "timestamp_seconds": 4.170167,
+      "end_sample": 8340473,
+      "end_seconds": 4.1702365,
+      "value": 0,
+      "hex": "00",
+      "ascii": "\\x00"
+    },
+    {
+      "index": 3,
+      "timestamp_sample": 8340505,
+      "timestamp_seconds": 4.1702525,
+      "end_sample": 8340644,
+      "end_seconds": 4.170322,
+      "value": 3,
+      "hex": "03",
+      "ascii": "\\x03"
+    },
+    {
+      "index": 4,
+      "timestamp_sample": 8340676,
+      "timestamp_seconds": 4.170338,
+      "end_sample": 8340815,
+      "end_seconds": 4.1704075,
+      "value": 67,
+      "hex": "43",
+      "ascii": "C"
+    },
+    {
+      "index": 5,
+      "timestamp_sample": 8340847,
+      "timestamp_seconds": 4.1704235,
+      "end_sample": 8340986,
+      "end_seconds": 4.170493,
+      "value": 32,
+      "hex": "20",
+      "ascii": " "
+    },
+    {
+      "index": 6,
+      "timestamp_sample": 8341018,
+      "timestamp_seconds": 4.170509,
+      "end_sample": 8341157,
+      "end_seconds": 4.1705785,
+      "value": 115,
+      "hex": "73",
+      "ascii": "s"
+    },
+    {
+      "index": 7,
+      "timestamp_sample": 8341188,
+      "timestamp_seconds": 4.170594,
+      "end_sample": 8341328,
+      "end_seconds": 4.170664,
+      "value": 107,
+      "hex": "6B",
+      "ascii": "k"
+    },
+    {
+      "index": 8,
+      "timestamp_sample": 8341360,
+      "timestamp_seconds": 4.17068,
+      "end_sample": 8341498,
+      "end_seconds": 4.170749,
+      "value": 212,
+      "hex": "D4",
+      "ascii": "\\xD4"
+    }
+  ],
+  "byte_count": {
+    "rx": 7,
+    "tx": 8,
+    "total": 15
+  }
+}

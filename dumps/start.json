@@ -1,0 +1,42 @@
+{
+  "format": "sigrok-uart-bytes/v2",
+  "generated_at": "2026-04-29T19:07:04.068318+00:00",
+  "capture": {
+    "driver": "fx2lafw",
+    "source": "start.sr",
+    "baudrate": 57600,
+    "mode": "8N1",
+    "data_bits": 8,
+    "parity": "none",
+    "stop_bits": 1.0,
+    "samplerate_hz": 2000000,
+    "samplerate_sigrok": "2m",
+    "rx_channel": "D5",
+    "tx_channel": "D7",
+    "invert_rx": false,
+    "invert_tx": false,
+    "group_sequences": false
+  },
+  "files": {
+    "json": "start.json",
+    "sigrok_session": "start.sr"
+  },
+  "rx_bytes": [
+    {
+      "index": 1,
+      "timestamp_sample": 722770,
+      "timestamp_seconds": 0.361385,
+      "end_sample": 722908,
+      "end_seconds": 0.361454,
+      "value": 0,
+      "hex": "00",
+      "ascii": "\\x00"
+    }
+  ],
+  "tx_bytes": [],
+  "byte_count": {
+    "rx": 1,
+    "tx": 0,
+    "total": 1
+  }
+}
