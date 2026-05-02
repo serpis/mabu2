@@ -15,18 +15,29 @@ from robot_animation import (
     BLINK_DEFAULT_CLOSE_MS,
     BLINK_DEFAULT_HOLD_MS,
     BLINK_DEFAULT_OPEN_MS,
+    BLINK_OVERLAY_SETTLE_MS,
     BlinkEvent,
     FeedbackDecoder,
     FeedbackFrame,
+    GAZE_TO_STRETCH_CHANNELS,
     GAZE_TO_CHANNELS,
     GazeControllerState,
     GazeCornersConfig,
+    HoldYaw,
+    NECK_STRETCH_DEFAULT_DURATION_MS,
+    NECK_STRETCH_DEFAULT_PITCH_DEG,
+    NECK_STRETCH_DEFAULT_SAMPLE_MS,
+    NECK_STRETCH_DEFAULT_TILT_DEG,
+    NECK_STRETCH_DEFAULT_YAW_DEG,
+    NECK_STRETCH_SETTLE_MS,
+    NeckStretchEvent,
     blink_base_eyelid_angle,
     gaze_to_curves,
     merged_curve_end_ms,
-    render_blink,
+    neck_stretch_event_end_ms,
     render_gaze_corners_curves,
     sample_ms_for_merged_script,
+    YawTargetCurve,
 )
 from robot_motion import (
     BAUDRATE,
@@ -66,6 +77,45 @@ class PendingGaze:
 
 
 @dataclass(frozen=True)
+class TimelineGaze:
+    start_s: float
+    yaw: float
+    pitch: float
+    dwell_s: float
+
+    @property
+    def end_s(self) -> float:
+        return self.start_s + self.dwell_s
+
+
+@dataclass(frozen=True)
+class TimelineBlink:
+    start_s: float
+    reason: str
+
+
+@dataclass(frozen=True)
+class TimelineNeckStretch:
+    start_s: float
+    pitch_deg: float
+    yaw_deg: float
+    tilt_deg: float
+    duration_ms: float
+    settle_ms: float
+
+
+@dataclass(frozen=True)
+class TimelineRender:
+    command: Command
+    duration_s: float
+    render_duration_ms: float
+    gazes: tuple[TimelineGaze, ...]
+    blinks: tuple[TimelineBlink, ...]
+    stretches: tuple[TimelineNeckStretch, ...]
+    frame_count: int
+
+
+@dataclass(frozen=True)
 class EngineConfig:
     port: str
     baudrate: int
@@ -79,6 +129,12 @@ class EngineConfig:
     blink_hold_ms: float
     blink_open_ms: float
     blink_closed_angle: float
+    neck_stretch_sample_ms: float
+    neck_stretch_pitch_deg: float
+    neck_stretch_yaw_deg: float
+    neck_stretch_tilt_deg: float
+    neck_stretch_duration_ms: float
+    neck_stretch_settle_ms: float
     feedback_silence_s: float
     done_fallback_s: float
     verbose: bool
@@ -104,6 +160,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--blink-hold-ms", type=float, default=BLINK_DEFAULT_HOLD_MS)
     parser.add_argument("--blink-open-ms", type=float, default=BLINK_DEFAULT_OPEN_MS)
     parser.add_argument("--blink-closed-angle", type=float, default=BLINK_DEFAULT_CLOSED_ANGLE)
+    parser.add_argument("--neck-stretch-sample-ms", type=float, default=NECK_STRETCH_DEFAULT_SAMPLE_MS)
+    parser.add_argument("--neck-stretch-pitch", type=float, default=NECK_STRETCH_DEFAULT_PITCH_DEG)
+    parser.add_argument("--neck-stretch-yaw", type=float, default=NECK_STRETCH_DEFAULT_YAW_DEG)
+    parser.add_argument("--neck-stretch-tilt", type=float, default=NECK_STRETCH_DEFAULT_TILT_DEG)
+    parser.add_argument("--neck-stretch-duration-ms", type=float, default=NECK_STRETCH_DEFAULT_DURATION_MS)
+    parser.add_argument("--neck-stretch-settle-ms", type=float, default=NECK_STRETCH_SETTLE_MS)
     parser.add_argument("--feedback-silence", type=float, default=DEFAULT_FEEDBACK_SILENCE_S)
     parser.add_argument("--done-fallback", type=float, default=DEFAULT_DONE_FALLBACK_S)
     parser.add_argument("--verbose", action="store_true")
@@ -150,8 +212,9 @@ class RobotEngine:
         self.last_tx_at: float | None = None
         self.last_feedback_at: float | None = None
         self.latest_frame: FeedbackFrame | None = None
-        self.pending_gaze: PendingGaze | None = None
-        self.pending_manual_blink = False
+        self.gaze_events: list[TimelineGaze] = []
+        self.blink_events: list[TimelineBlink] = []
+        self.neck_stretch_events: list[TimelineNeckStretch] = []
         self.idle_blink_enabled = config.idle_blink
         self.next_idle_blink_at = time.monotonic() + config.blink_interval_s
         self.last_blink_at: float | None = None
@@ -241,6 +304,7 @@ class RobotEngine:
             eye_pitch=frame.angle("eye_updown"),
             neck_yaw=frame.angle("neck_rotation"),
             neck_pitch=frame.angle("neck_elevation"),
+            neck_tilt=frame.angle("neck_tilt"),
             eyelid_left=frame.angle("eyelid_left"),
             eyelid_right=frame.angle("eyelid_right"),
         )
@@ -257,6 +321,78 @@ class RobotEngine:
         current_yaw, current_pitch = self.estimated_gaze()
         return math.hypot(gaze.yaw - current_yaw, gaze.pitch - current_pitch)
 
+    def timeline_blink_event(self, blink: TimelineBlink, render_start_s: float) -> BlinkEvent:
+        return self.make_blink_event(max(0.0, (blink.start_s - render_start_s) * 1000.0))
+
+    def timeline_blink_end_s(self, blink: TimelineBlink) -> float:
+        duration_ms = (
+            self.config.blink_close_ms
+            + self.config.blink_hold_ms
+            + self.config.blink_open_ms
+            + BLINK_OVERLAY_SETTLE_MS
+        )
+        return blink.start_s + duration_ms / 1000.0
+
+    def timeline_neck_stretch_event(self, stretch: TimelineNeckStretch, render_start_s: float) -> NeckStretchEvent:
+        return NeckStretchEvent(
+            start_ms=max(0.0, (stretch.start_s - render_start_s) * 1000.0),
+            pitch_deg=stretch.pitch_deg,
+            yaw_deg=stretch.yaw_deg,
+            tilt_deg=stretch.tilt_deg,
+            duration_ms=stretch.duration_ms,
+            settle_ms=stretch.settle_ms,
+        )
+
+    def timeline_neck_stretch_end_s(self, stretch: TimelineNeckStretch) -> float:
+        event = NeckStretchEvent(
+            start_ms=0.0,
+            pitch_deg=stretch.pitch_deg,
+            yaw_deg=stretch.yaw_deg,
+            tilt_deg=stretch.tilt_deg,
+            duration_ms=stretch.duration_ms,
+            settle_ms=stretch.settle_ms,
+        )
+        return stretch.start_s + neck_stretch_event_end_ms(event) / 1000.0
+
+    def timeline_event_end_s(self, event: TimelineGaze | TimelineBlink | TimelineNeckStretch) -> float:
+        if isinstance(event, TimelineGaze):
+            return event.end_s
+        if isinstance(event, TimelineNeckStretch):
+            return self.timeline_neck_stretch_end_s(event)
+        return self.timeline_blink_end_s(event)
+
+    def latest_timeline_end_s(self, *, include_idle_blinks: bool = True) -> float | None:
+        events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch] = [
+            *self.gaze_events,
+            *self.neck_stretch_events,
+        ]
+        events.extend(
+            blink for blink in self.blink_events
+            if include_idle_blinks or blink.reason != "idle"
+        )
+        if not events:
+            return None
+        return max(self.timeline_event_end_s(event) for event in events)
+
+    def latest_explicit_gaze_end_s(self) -> float | None:
+        if not self.gaze_events:
+            return None
+        return max(event.end_s for event in self.gaze_events)
+
+    def latest_scheduled_gaze_target_before(self, at_s: float) -> tuple[float, float] | None:
+        candidates = [event for event in self.gaze_events if event.start_s <= at_s]
+        if not candidates:
+            return None
+        event = max(candidates, key=lambda item: item.start_s)
+        return event.yaw, event.pitch
+
+    def scheduled_gaze_jump_degrees(self, gaze: PendingGaze, start_s: float) -> float:
+        reference = self.latest_scheduled_gaze_target_before(start_s)
+        if reference is None:
+            reference = self.estimated_gaze()
+        yaw, pitch = reference
+        return math.hypot(gaze.yaw - yaw, gaze.pitch - pitch)
+
     def make_blink_event(self, start_ms: float = 0.0) -> BlinkEvent:
         return BlinkEvent(
             start_ms=start_ms,
@@ -272,157 +408,276 @@ class RobotEngine:
             or at_s - previous_blink_at >= self.config.gaze_blink_refractory_s
         )
 
-    def blink_events_for_window(
-        self,
-        duration_ms: float,
-        *,
-        gaze: PendingGaze | None = None,
-        gaze_jump_deg: float = 0.0,
-    ) -> tuple[BlinkEvent, ...]:
+    def schedule_blink_at(self, start_s: float, *, reason: str, force: bool = False) -> bool:
+        if any(abs(event.start_s - start_s) < 0.001 for event in self.blink_events):
+            return False
+        if not force and not self.can_auto_blink_at(start_s, self.last_blink_at):
+            return False
+        self.blink_events.append(TimelineBlink(start_s=start_s, reason=reason))
+        self.last_blink_at = start_s
+        self.next_idle_blink_at = max(self.next_idle_blink_at, start_s + self.config.blink_interval_s)
+        return True
+
+    def schedule_gaze(self, gaze: PendingGaze) -> TimelineGaze:
+        gaze_to_curves(gaze.yaw, gaze.pitch, gaze.dwell_ms)
         now = time.monotonic()
-        events: list[BlinkEvent] = []
-        event_times: list[float] = []
-        latest_scheduled_blink_at = self.last_blink_at
+        latest_gaze_end = self.latest_explicit_gaze_end_s()
+        start_s = now
+        if latest_gaze_end is not None:
+            start_s = max(start_s, latest_gaze_end)
+        if self.state != BoardState.IDLE:
+            start_s = max(start_s, self.expected_done_at)
 
-        def add_event(start_ms: float, *, force: bool = False) -> bool:
-            nonlocal latest_scheduled_blink_at
-            at_s = now + start_ms / 1000.0
-            if latest_scheduled_blink_at is not None and abs(at_s - latest_scheduled_blink_at) < 0.001:
-                return False
-            if not force and not self.can_auto_blink_at(at_s, latest_scheduled_blink_at):
-                return False
-            events.append(self.make_blink_event(start_ms))
-            event_times.append(at_s)
-            latest_scheduled_blink_at = at_s
-            return True
+        jump_deg = self.scheduled_gaze_jump_degrees(gaze, start_s)
+        event = TimelineGaze(
+            start_s=start_s,
+            yaw=gaze.yaw,
+            pitch=gaze.pitch,
+            dwell_s=gaze.dwell_ms / 1000.0,
+        )
+        self.gaze_events.append(event)
 
-        if self.pending_manual_blink:
-            add_event(0.0, force=True)
-            self.pending_manual_blink = False
+        # Idle autos are derived from the timeline. Future idle blinks are not sacred.
+        self.blink_events = [
+            blink for blink in self.blink_events
+            if blink.reason != "idle" or blink.start_s < start_s
+        ]
+        self.next_idle_blink_at = max(self.next_idle_blink_at, event.end_s + self.config.blink_interval_s)
 
-        if (
-            gaze is not None
-            and gaze_jump_deg > self.config.gaze_blink_threshold_deg
-        ):
-            add_event(0.0)
+        if jump_deg > self.config.gaze_blink_threshold_deg:
+            self.schedule_blink_at(start_s, reason="gaze", force=False)
+        return event
 
-        if self.idle_blink_enabled:
-            window_end = now + duration_ms / 1000.0
-            while self.next_idle_blink_at <= window_end:
-                start_ms = max(0.0, (self.next_idle_blink_at - now) * 1000.0)
-                if add_event(start_ms):
-                    self.next_idle_blink_at += self.config.blink_interval_s
-                elif latest_scheduled_blink_at is not None:
-                    min_next = latest_scheduled_blink_at + max(
-                        self.config.blink_interval_s,
-                        self.config.gaze_blink_refractory_s,
-                    )
-                    self.next_idle_blink_at = max(
-                        self.next_idle_blink_at + self.config.blink_interval_s,
-                        min_next,
-                    )
-                else:
-                    self.next_idle_blink_at += self.config.blink_interval_s
+    def schedule_manual_blink(self) -> TimelineBlink | None:
+        now = time.monotonic()
+        start_s = now
+        if self.state != BoardState.IDLE:
+            start_s = max(start_s, self.expected_done_at)
+        if not self.schedule_blink_at(start_s, reason="manual", force=True):
+            return None
+        return max(self.blink_events, key=lambda event: event.start_s)
 
-        if event_times:
-            latest_event_at = max(event_times)
-            self.last_blink_at = latest_event_at
-            self.next_idle_blink_at = max(
-                self.next_idle_blink_at,
-                latest_event_at + self.config.blink_interval_s,
+    def schedule_neck_stretch(self) -> TimelineNeckStretch:
+        now = time.monotonic()
+        start_s = now
+        if self.state != BoardState.IDLE:
+            start_s = max(start_s, self.expected_done_at)
+        latest_end = self.latest_timeline_end_s(include_idle_blinks=False)
+        if latest_end is not None:
+            start_s = max(start_s, latest_end)
+
+        event = TimelineNeckStretch(
+            start_s=start_s,
+            pitch_deg=self.config.neck_stretch_pitch_deg,
+            yaw_deg=self.config.neck_stretch_yaw_deg,
+            tilt_deg=self.config.neck_stretch_tilt_deg,
+            duration_ms=self.config.neck_stretch_duration_ms,
+            settle_ms=self.config.neck_stretch_settle_ms,
+        )
+        # Future idle blinks are rescheduled after explicit animation work.
+        self.blink_events = [
+            blink for blink in self.blink_events
+            if blink.reason != "idle" or blink.start_s < start_s
+        ]
+        self.neck_stretch_events.append(event)
+        self.next_idle_blink_at = max(
+            self.next_idle_blink_at,
+            self.timeline_neck_stretch_end_s(event) + self.config.blink_interval_s,
+        )
+        return event
+
+    def ensure_idle_blink_due(self, now: float) -> None:
+        if not self.idle_blink_enabled or now < self.next_idle_blink_at:
+            return
+        if self.latest_explicit_gaze_end_s() is not None:
+            latest_gaze_end = self.latest_explicit_gaze_end_s()
+            if latest_gaze_end is not None and now < latest_gaze_end:
+                self.next_idle_blink_at = latest_gaze_end + self.config.blink_interval_s
+                return
+        self.schedule_blink_at(now, reason="idle", force=False)
+        self.next_idle_blink_at = max(self.next_idle_blink_at, now + self.config.blink_interval_s)
+
+    def prune_timeline(self, now: float) -> None:
+        self.gaze_events = [event for event in self.gaze_events if event.end_s > now]
+        self.blink_events = [event for event in self.blink_events if self.timeline_blink_end_s(event) > now]
+        self.neck_stretch_events = [
+            event for event in self.neck_stretch_events
+            if self.timeline_neck_stretch_end_s(event) > now
+        ]
+
+    def collect_render_window(
+        self,
+        render_start_s: float,
+    ) -> tuple[
+        tuple[TimelineGaze, ...],
+        tuple[TimelineBlink, ...],
+        tuple[TimelineNeckStretch, ...],
+        float,
+    ] | None:
+        all_events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch] = [
+            *self.gaze_events,
+            *self.blink_events,
+            *self.neck_stretch_events,
+        ]
+        included: set[TimelineGaze | TimelineBlink | TimelineNeckStretch] = set()
+        block_end_s = render_start_s
+
+        while True:
+            added = False
+            for event in sorted(all_events, key=lambda item: item.start_s):
+                if event in included:
+                    continue
+                event_end_s = self.timeline_event_end_s(event)
+                if event.start_s <= block_end_s + 0.001 and event_end_s > render_start_s:
+                    included.add(event)
+                    block_end_s = max(block_end_s, event_end_s)
+                    added = True
+            if not added:
+                break
+
+        if not included:
+            return None
+
+        gazes = tuple(event for event in included if isinstance(event, TimelineGaze))
+        blinks = tuple(event for event in included if isinstance(event, TimelineBlink))
+        stretches = tuple(event for event in included if isinstance(event, TimelineNeckStretch))
+        return gazes, blinks, stretches, block_end_s
+
+    def gaze_curves_for_window(
+        self,
+        render_start_s: float,
+        render_end_s: float,
+        gazes: tuple[TimelineGaze, ...],
+    ) -> tuple[YawTargetCurve, YawTargetCurve]:
+        current_yaw, current_pitch = self.estimated_gaze()
+        if not gazes:
+            duration_ms = max(1.0, (render_end_s - render_start_s) * 1000.0)
+            return (
+                YawTargetCurve((HoldYaw(0.0, duration_ms, current_yaw),)),
+                YawTargetCurve((HoldYaw(0.0, duration_ms, current_pitch),)),
             )
 
-        return tuple(events)
+        yaw_segments: list[HoldYaw] = []
+        pitch_segments: list[HoldYaw] = []
+        cursor_ms = 0.0
+        hold_yaw = current_yaw
+        hold_pitch = current_pitch
 
-    def run_blink(self) -> None:
-        base = self.current_base_eyelid_angle()
-        rendered, _samples = render_blink(
-            base,
-            base,
-            closed_angle=self.config.blink_closed_angle,
-            close_ms=self.config.blink_close_ms,
-            hold_ms=self.config.blink_hold_ms,
-            open_ms=self.config.blink_open_ms,
-            name="engine_blink",
-        )
-        self.log(f"blink baseline={base:.2f}deg frames={len(rendered.keyframes)}")
-        self.send_rendered_command(rendered.command(), script_duration_s=rendered_duration_s(rendered.keyframes))
-        now = time.monotonic()
-        self.last_blink_at = now
-        self.next_idle_blink_at = now + self.config.blink_interval_s
+        for gaze in sorted(gazes, key=lambda event: event.start_s):
+            start_ms = max(0.0, (gaze.start_s - render_start_s) * 1000.0)
+            end_ms = max(start_ms + 1.0, (gaze.end_s - render_start_s) * 1000.0)
+            if start_ms > cursor_ms:
+                yaw_segments.append(HoldYaw(cursor_ms, start_ms, hold_yaw))
+                pitch_segments.append(HoldYaw(cursor_ms, start_ms, hold_pitch))
+            yaw_segments.append(HoldYaw(start_ms, end_ms, gaze.yaw))
+            pitch_segments.append(HoldYaw(start_ms, end_ms, gaze.pitch))
+            cursor_ms = end_ms
+            hold_yaw = gaze.yaw
+            hold_pitch = gaze.pitch
 
-    def run_gaze(self, gaze: PendingGaze) -> None:
-        yaw_curve, pitch_curve = gaze_to_curves(gaze.yaw, gaze.pitch, gaze.dwell_ms)
-        gaze_jump_deg = self.gaze_jump_degrees(gaze)
-        blink_events = self.blink_events_for_window(
-            gaze.dwell_ms,
-            gaze=gaze,
-            gaze_jump_deg=gaze_jump_deg,
+        return YawTargetCurve(tuple(yaw_segments)), YawTargetCurve(tuple(pitch_segments))
+
+    def build_timeline_render(self, render_start_s: float) -> TimelineRender | None:
+        window = self.collect_render_window(render_start_s)
+        if window is None:
+            return None
+        gazes, blinks, stretches, render_end_s = window
+        yaw_curve, pitch_curve = self.gaze_curves_for_window(render_start_s, render_end_s, gazes)
+        blink_events = tuple(self.timeline_blink_event(blink, render_start_s) for blink in blinks)
+        neck_stretch_events = tuple(
+            self.timeline_neck_stretch_event(stretch, render_start_s)
+            for stretch in stretches
         )
-        render_duration_ms = merged_curve_end_ms(yaw_curve, pitch_curve, blink_events)
-        sample_ms = sample_ms_for_merged_script(
-            self.config.gaze_sample_ms,
-            len(GAZE_TO_CHANNELS),
+        channel_count = len(GAZE_TO_STRETCH_CHANNELS) if neck_stretch_events else len(GAZE_TO_CHANNELS)
+        render_duration_ms = merged_curve_end_ms(
             yaw_curve,
             pitch_curve,
             blink_events,
+            neck_stretch_events,
+        )
+        sample_ms = sample_ms_for_merged_script(
+            min(self.config.gaze_sample_ms, self.config.neck_stretch_sample_ms)
+            if neck_stretch_events
+            else self.config.gaze_sample_ms,
+            channel_count,
+            yaw_curve,
+            pitch_curve,
+            blink_events,
+            neck_stretch_events,
         )
         rendered, _samples = render_gaze_corners_curves(
             yaw_curve,
             pitch_curve,
             config=GazeCornersConfig(sample_ms=sample_ms),
-            name=f"engine_gaze_yaw={gaze.yaw:g}_pitch={gaze.pitch:g}",
+            name="engine_timeline",
             initial_state=self.current_controller_state(),
             include_eyelids=True,
             eyelid_offset=self.config.eyelid_offset,
             blink_events=blink_events,
+            neck_stretch_events=neck_stretch_events,
         )
+        return TimelineRender(
+            command=rendered.command(),
+            duration_s=rendered_duration_s(rendered.keyframes),
+            render_duration_ms=render_duration_ms,
+            gazes=gazes,
+            blinks=blinks,
+            stretches=stretches,
+            frame_count=len(rendered.keyframes),
+        )
+
+    def run_timeline_render(self, render_start_s: float) -> bool:
+        rendered = self.build_timeline_render(render_start_s)
+        if rendered is None:
+            return False
+
+        blink_reasons = ",".join(sorted({event.reason for event in rendered.blinks})) or "none"
         self.log(
-            f"gaze yaw={gaze.yaw:g} pitch={gaze.pitch:g} ms={gaze.dwell_ms:g} "
-            f"render_ms={render_duration_ms:g} frames={len(rendered.keyframes)} "
-            f"blinks={len(blink_events)} "
-            f"jump={gaze_jump_deg:.1f}deg"
+            f"timeline render_ms={rendered.render_duration_ms:g} "
+            f"frames={rendered.frame_count} gazes={len(rendered.gazes)} "
+            f"blinks={len(rendered.blinks)} stretches={len(rendered.stretches)} "
+            f"blink_reasons={blink_reasons}"
         )
-        self.send_rendered_command(rendered.command(), script_duration_s=rendered_duration_s(rendered.keyframes))
+        self.send_rendered_command(rendered.command, script_duration_s=rendered.duration_s)
+        self.gaze_events = [event for event in self.gaze_events if event not in rendered.gazes]
+        self.blink_events = [event for event in self.blink_events if event not in rendered.blinks]
+        self.neck_stretch_events = [
+            event for event in self.neck_stretch_events
+            if event not in rendered.stretches
+        ]
+        return True
 
     def maybe_start_next(self) -> None:
         if self.state != BoardState.IDLE:
             return
 
-        if self.pending_gaze is not None:
-            gaze = self.pending_gaze
-            self.pending_gaze = None
-            try:
-                self.run_gaze(gaze)
-            except ValueError as exc:
-                self.log(f"gaze error: {exc}")
-            return
-
         now = time.monotonic()
-        if self.pending_manual_blink:
-            self.pending_manual_blink = False
-            try:
-                self.run_blink()
-            except ValueError as exc:
-                self.log(f"blink error: {exc}")
-            return
-
-        if self.idle_blink_enabled and now >= self.next_idle_blink_at:
-            try:
-                self.run_blink()
-            except ValueError as exc:
-                self.log(f"idle blink error: {exc}")
-                self.next_idle_blink_at = now + self.config.blink_interval_s
+        self.prune_timeline(now)
+        self.ensure_idle_blink_due(now)
+        try:
+            self.run_timeline_render(now)
+        except ValueError as exc:
+            self.log(f"timeline render error: {exc}")
 
     def print_status(self) -> None:
         feedback_age = "none"
         if self.last_feedback_at is not None:
             feedback_age = f"{time.monotonic() - self.last_feedback_at:.2f}s"
-        pending = "none" if self.pending_gaze is None else f"gaze {self.pending_gaze.yaw:g},{self.pending_gaze.pitch:g}"
+        now = time.monotonic()
+        next_event = "none"
+        all_events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch] = [
+            *self.gaze_events,
+            *self.blink_events,
+            *self.neck_stretch_events,
+        ]
+        if all_events:
+            event = min(all_events, key=lambda item: item.start_s)
+            next_event = f"{type(event).__name__}@{max(0.0, event.start_s - now):.2f}s"
         self.log(
             f"state={self.state.value} feedback_age={feedback_age} "
-            f"pending={pending} manual_blink={self.pending_manual_blink} "
-            f"idle_blink={self.idle_blink_enabled}"
+            f"timeline_gazes={len(self.gaze_events)} timeline_blinks={len(self.blink_events)} "
+            f"timeline_stretches={len(self.neck_stretch_events)} "
+            f"next={next_event} idle_blink={self.idle_blink_enabled}"
         )
 
     def process_line(self, line: str) -> None:
@@ -438,23 +693,33 @@ class RobotEngine:
             elif command == "help":
                 self.log(
                     "commands: gaze YAW[,PITCH] [MS] | gaze YAW PITCH [MS] | "
-                    "blink | idle on|off | interval SEC | status | quit"
+                    "blink | stretch | idle on|off | interval SEC | status | quit"
                 )
             elif command == "status":
                 self.print_status()
             elif command == "blink":
-                self.pending_manual_blink = True
-                self.log("queued blink")
-            elif command in {"gaze", "gaze-to", "look"}:
-                self.pending_gaze = parse_gaze_line(parts)
+                event = self.schedule_manual_blink()
+                if event is None:
+                    self.log("blink already scheduled")
+                else:
+                    self.log(f"scheduled blink at +{max(0.0, event.start_s - time.monotonic()):.2f}s")
+            elif command in {"stretch", "neck-stretch", "neck_stretch"}:
+                event = self.schedule_neck_stretch()
                 self.log(
-                    f"queued gaze yaw={self.pending_gaze.yaw:g} "
-                    f"pitch={self.pending_gaze.pitch:g} ms={self.pending_gaze.dwell_ms:g}"
+                    f"scheduled neck stretch at +{max(0.0, event.start_s - time.monotonic()):.2f}s"
+                )
+            elif command in {"gaze", "gaze-to", "look"}:
+                gaze = parse_gaze_line(parts)
+                event = self.schedule_gaze(gaze)
+                self.log(
+                    f"scheduled gaze yaw={event.yaw:g} pitch={event.pitch:g} "
+                    f"ms={event.dwell_s * 1000:g} at +{max(0.0, event.start_s - time.monotonic()):.2f}s"
                 )
             elif command == "idle":
                 if len(parts) != 2 or parts[1].lower() not in {"on", "off"}:
                     raise ValueError("usage: idle on|off")
                 self.idle_blink_enabled = parts[1].lower() == "on"
+                self.blink_events = [event for event in self.blink_events if event.reason != "idle"]
                 self.next_idle_blink_at = time.monotonic() + self.config.blink_interval_s
                 self.log(f"idle blink {'on' if self.idle_blink_enabled else 'off'}")
             elif command == "interval":
@@ -466,6 +731,7 @@ class RobotEngine:
                 self.config = EngineConfig(
                     **{**self.config.__dict__, "blink_interval_s": interval}
                 )
+                self.blink_events = [event for event in self.blink_events if event.reason != "idle"]
                 self.next_idle_blink_at = time.monotonic() + interval
                 self.log(f"blink interval {interval:g}s")
             elif command == "poweroff":
@@ -510,6 +776,18 @@ def main() -> int:
     if args.gaze_blink_refractory < 0:
         print("--gaze-blink-refractory must be >= 0", file=sys.stderr)
         return 2
+    if args.neck_stretch_sample_ms <= 0:
+        print("--neck-stretch-sample-ms must be > 0", file=sys.stderr)
+        return 2
+    if args.neck_stretch_duration_ms <= 0:
+        print("--neck-stretch-duration-ms must be > 0", file=sys.stderr)
+        return 2
+    if args.neck_stretch_settle_ms < 0:
+        print("--neck-stretch-settle-ms must be >= 0", file=sys.stderr)
+        return 2
+    if min(args.neck_stretch_pitch, args.neck_stretch_yaw, args.neck_stretch_tilt) < 0:
+        print("--neck-stretch-* amplitudes must be >= 0", file=sys.stderr)
+        return 2
     config = EngineConfig(
         port=args.port,
         baudrate=args.baudrate,
@@ -523,6 +801,12 @@ def main() -> int:
         blink_hold_ms=args.blink_hold_ms,
         blink_open_ms=args.blink_open_ms,
         blink_closed_angle=args.blink_closed_angle,
+        neck_stretch_sample_ms=args.neck_stretch_sample_ms,
+        neck_stretch_pitch_deg=args.neck_stretch_pitch,
+        neck_stretch_yaw_deg=args.neck_stretch_yaw,
+        neck_stretch_tilt_deg=args.neck_stretch_tilt,
+        neck_stretch_duration_ms=args.neck_stretch_duration_ms,
+        neck_stretch_settle_ms=args.neck_stretch_settle_ms,
         feedback_silence_s=args.feedback_silence,
         done_fallback_s=args.done_fallback,
         verbose=args.verbose,

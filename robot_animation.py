@@ -54,6 +54,7 @@ YAW_GAZE_CHANNELS = ("eye_leftright", "neck_rotation")
 BLINK_CHANNELS = ("eyelid_left", "eyelid_right")
 CORNER_GAZE_CHANNELS = ("eye_leftright", "eye_updown", "neck_elevation", "neck_rotation")
 GAZE_TO_CHANNELS = LOOK_CHANNELS
+GAZE_TO_STRETCH_CHANNELS = (*GAZE_TO_CHANNELS, "neck_tilt")
 NECK_ROTATION_MASK = CHANNELS["neck_rotation"].mask
 MEASURED_CHANNEL_MAX_SPEED_DPS = {
     "eyelid_left": 220.0,
@@ -72,6 +73,12 @@ BLINK_DEFAULT_CLOSE_MS = 360.0
 BLINK_DEFAULT_HOLD_MS = 0.0
 BLINK_DEFAULT_OPEN_MS = 360.0
 BLINK_OVERLAY_SETTLE_MS = 400.0
+NECK_STRETCH_DEFAULT_PITCH_DEG = 6.0
+NECK_STRETCH_DEFAULT_YAW_DEG = 7.0
+NECK_STRETCH_DEFAULT_TILT_DEG = 5.0
+NECK_STRETCH_DEFAULT_DURATION_MS = 3700.0
+NECK_STRETCH_SETTLE_MS = 700.0
+NECK_STRETCH_DEFAULT_SAMPLE_MS = 120.0
 REACHABLE_RANGE_EPS_DEG = 0.05
 
 
@@ -112,6 +119,7 @@ class GazeControllerState:
     eye_pitch: float
     neck_yaw: float
     neck_pitch: float
+    neck_tilt: float | None = None
     eyelid_left: float | None = None
     eyelid_right: float | None = None
 
@@ -131,6 +139,8 @@ class GazeCornerSample:
     eyelid_right_byte: int
     neck_yaw_byte: int
     neck_pitch_byte: int
+    neck_tilt: float | None = None
+    neck_tilt_byte: int | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +159,16 @@ class BlinkEvent:
     hold_ms: float = BLINK_DEFAULT_HOLD_MS
     open_ms: float = BLINK_DEFAULT_OPEN_MS
     closed_angle: float = BLINK_DEFAULT_CLOSED_ANGLE
+
+
+@dataclass(frozen=True)
+class NeckStretchEvent:
+    start_ms: float = 0.0
+    pitch_deg: float = NECK_STRETCH_DEFAULT_PITCH_DEG
+    yaw_deg: float = NECK_STRETCH_DEFAULT_YAW_DEG
+    tilt_deg: float = NECK_STRETCH_DEFAULT_TILT_DEG
+    duration_ms: float = NECK_STRETCH_DEFAULT_DURATION_MS
+    settle_ms: float = NECK_STRETCH_SETTLE_MS
 
 
 @dataclass(frozen=True)
@@ -339,6 +359,7 @@ class GazeCornersConfig:
     eyelid_tau_ms: float = 70.0
     neck_yaw_tau_ms: float = 650.0
     neck_pitch_tau_ms: float = 500.0
+    neck_tilt_tau_ms: float = 500.0
     eye_yaw_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["eye_leftright"]
     eye_pitch_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["eye_updown"]
     eyelid_max_speed_dps: float = min(
@@ -347,6 +368,7 @@ class GazeCornersConfig:
     )
     neck_yaw_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["neck_rotation"]
     neck_pitch_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["neck_elevation"]
+    neck_tilt_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["neck_tilt"]
     eye_yaw_limit_deg: float = 15.0
     eye_pitch_limit_deg: float = 10.0
 
@@ -460,15 +482,82 @@ def blink_event_render_end_ms(event: BlinkEvent) -> float:
     return blink_event_end_ms(event) + BLINK_OVERLAY_SETTLE_MS
 
 
+def validate_neck_stretch_event(event: NeckStretchEvent) -> None:
+    if event.start_ms < 0:
+        raise ValueError("neck stretch start_ms must be >= 0")
+    if event.duration_ms <= 0:
+        raise ValueError("neck stretch duration_ms must be > 0")
+    if event.settle_ms < 0:
+        raise ValueError("neck stretch settle_ms must be >= 0")
+    for name, value in (
+        ("neck stretch pitch_deg", event.pitch_deg),
+        ("neck stretch yaw_deg", event.yaw_deg),
+        ("neck stretch tilt_deg", event.tilt_deg),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+        if value < 0:
+            raise ValueError(f"{name} must be >= 0")
+
+
+def neck_stretch_event_end_ms(event: NeckStretchEvent) -> float:
+    validate_neck_stretch_event(event)
+    return event.start_ms + event.duration_ms + event.settle_ms
+
+
+def neck_stretch_event_offsets(t_ms: float, event: NeckStretchEvent) -> tuple[float, float, float]:
+    validate_neck_stretch_event(event)
+    if t_ms < event.start_ms or t_ms >= event.start_ms + event.duration_ms:
+        return 0.0, 0.0, 0.0
+
+    # Offsets are yaw, pitch/elevation, tilt. They are relative to the
+    # current gaze controller pose and are compensated by the eyes later.
+    local_ms = t_ms - event.start_ms
+    keypoints = (
+        (0.00, 0.0, 0.0, 0.0),
+        (0.14, 0.0, event.pitch_deg, 0.0),
+        (0.32, 0.0, -event.pitch_deg, 0.0),
+        (0.46, 0.0, 0.0, 0.0),
+        (0.62, -event.yaw_deg, 0.0, -event.tilt_deg),
+        (0.84, event.yaw_deg, 0.0, event.tilt_deg),
+        (1.00, 0.0, 0.0, 0.0),
+    )
+    progress = local_ms / event.duration_ms
+    for (a_t, a_yaw, a_pitch, a_tilt), (b_t, b_yaw, b_pitch, b_tilt) in zip(keypoints, keypoints[1:]):
+        if progress <= b_t:
+            u = normalized_time(progress, a_t, b_t)
+            eased = u * u * (3.0 - 2.0 * u)
+            return (
+                a_yaw + (b_yaw - a_yaw) * eased,
+                a_pitch + (b_pitch - a_pitch) * eased,
+                a_tilt + (b_tilt - a_tilt) * eased,
+            )
+    return 0.0, 0.0, 0.0
+
+
+def neck_stretch_offsets(t_ms: float, events: Sequence[NeckStretchEvent]) -> tuple[float, float, float]:
+    yaw = 0.0
+    pitch = 0.0
+    tilt = 0.0
+    for event in events:
+        event_yaw, event_pitch, event_tilt = neck_stretch_event_offsets(t_ms, event)
+        yaw += event_yaw
+        pitch += event_pitch
+        tilt += event_tilt
+    return yaw, pitch, tilt
+
+
 def merged_curve_end_ms(
     yaw_curve: YawTargetCurve,
     pitch_curve: YawTargetCurve,
     blink_events: Sequence[BlinkEvent] = (),
+    neck_stretch_events: Sequence[NeckStretchEvent] = (),
 ) -> float:
     return max(
         yaw_curve.end_ms,
         pitch_curve.end_ms,
         *(blink_event_render_end_ms(event) for event in blink_events),
+        *(neck_stretch_event_end_ms(event) for event in neck_stretch_events),
     )
 
 
@@ -478,11 +567,23 @@ def sample_ms_for_merged_script(
     yaw_curve: YawTargetCurve,
     pitch_curve: YawTargetCurve,
     blink_events: Sequence[BlinkEvent] = (),
+    neck_stretch_events: Sequence[NeckStretchEvent] = (),
 ) -> float:
     if channel_count <= 0:
         raise ValueError("channel_count must be > 0")
     max_frames = (255 - 3) // (channel_count + 1)
-    return max(requested_sample_ms, math.ceil(merged_curve_end_ms(yaw_curve, pitch_curve, blink_events) / max_frames))
+    return max(
+        requested_sample_ms,
+        math.ceil(
+            merged_curve_end_ms(
+                yaw_curve,
+                pitch_curve,
+                blink_events,
+                neck_stretch_events,
+            )
+            / max_frames
+        ),
+    )
 
 
 def blink_weight(t_ms: float, events: Sequence[BlinkEvent]) -> float:
@@ -626,9 +727,17 @@ def render_gaze_corners_curves(
     include_eyelids: bool = False,
     eyelid_offset: float = -2.0,
     blink_events: Sequence[BlinkEvent] = (),
+    neck_stretch_events: Sequence[NeckStretchEvent] = (),
 ) -> tuple[RenderedAnimation, tuple[GazeCornerSample, ...]]:
     config = config or GazeCornersConfig()
-    render_channels = GAZE_TO_CHANNELS if include_eyelids else CORNER_GAZE_CHANNELS
+    if neck_stretch_events:
+        render_channels = (
+            GAZE_TO_STRETCH_CHANNELS
+            if include_eyelids
+            else (*CORNER_GAZE_CHANNELS, "neck_tilt")
+        )
+    else:
+        render_channels = GAZE_TO_CHANNELS if include_eyelids else CORNER_GAZE_CHANNELS
     if config.sample_ms <= 0:
         raise ValueError("sample_ms must be > 0")
     if yaw_curve.start_ms != pitch_curve.start_ms or yaw_curve.end_ms != pitch_curve.end_ms:
@@ -638,6 +747,7 @@ def render_gaze_corners_curves(
         or config.eyelid_tau_ms <= 0
         or config.neck_yaw_tau_ms <= 0
         or config.neck_pitch_tau_ms <= 0
+        or config.neck_tilt_tau_ms <= 0
     ):
         raise ValueError("gaze controller tau values must be > 0")
     if (
@@ -646,6 +756,7 @@ def render_gaze_corners_curves(
         or config.eyelid_max_speed_dps <= 0
         or config.neck_yaw_max_speed_dps <= 0
         or config.neck_pitch_max_speed_dps <= 0
+        or config.neck_tilt_max_speed_dps <= 0
     ):
         raise ValueError("gaze controller max speeds must be > 0")
     if config.eye_yaw_limit_deg <= 0 or config.eye_pitch_limit_deg <= 0:
@@ -654,7 +765,9 @@ def render_gaze_corners_curves(
         blink_event_weight(event.start_ms, event)
         validate_channel_angle("eyelid_left", event.closed_angle, "blink closed angle")
         validate_channel_angle("eyelid_right", event.closed_angle, "blink closed angle")
-    render_end_ms = merged_curve_end_ms(yaw_curve, pitch_curve, blink_events)
+    for event in neck_stretch_events:
+        validate_neck_stretch_event(event)
+    render_end_ms = merged_curve_end_ms(yaw_curve, pitch_curve, blink_events, neck_stretch_events)
 
     if initial_state is None:
         eye_yaw = 0.0
@@ -669,6 +782,7 @@ def render_gaze_corners_curves(
             CHANNELS["neck_elevation"].min_angle,
             CHANNELS["neck_elevation"].max_angle,
         )
+        neck_tilt = 0.0
         eyelid_left = eyelid_offset - eye_pitch
         eyelid_right = eyelid_offset - eye_pitch
     else:
@@ -692,6 +806,11 @@ def render_gaze_corners_curves(
             CHANNELS["neck_elevation"].min_angle,
             CHANNELS["neck_elevation"].max_angle,
         )
+        neck_tilt = clamp(
+            initial_state.neck_tilt if initial_state.neck_tilt is not None else 0.0,
+            CHANNELS["neck_tilt"].min_angle,
+            CHANNELS["neck_tilt"].max_angle,
+        )
         default_eyelid = eyelid_offset - eye_pitch
         eyelid_left = clamp(
             initial_state.eyelid_left if initial_state.eyelid_left is not None else default_eyelid,
@@ -703,6 +822,7 @@ def render_gaze_corners_curves(
             CHANNELS["eyelid_right"].min_angle,
             CHANNELS["eyelid_right"].max_angle,
         )
+    base_neck_tilt = neck_tilt
     samples: list[GazeCornerSample] = []
     keyframes: list[tuple[int, ...]] = []
 
@@ -711,12 +831,21 @@ def render_gaze_corners_curves(
         interval_ms = min(config.sample_ms, render_end_ms - t_ms)
         target_yaw = yaw_curve.sample(t_ms)
         target_pitch = pitch_curve.sample(t_ms)
+        stretch_yaw, stretch_pitch, stretch_tilt = neck_stretch_offsets(
+            t_ms + interval_ms,
+            neck_stretch_events,
+        )
 
-        neck_yaw_target = clamp(
+        eye_yaw_min = max(CHANNELS["eye_leftright"].min_angle, -config.eye_yaw_limit_deg)
+        eye_yaw_max = min(CHANNELS["eye_leftright"].max_angle, config.eye_yaw_limit_deg)
+        neck_yaw_min = max(CHANNELS["neck_rotation"].min_angle, target_yaw - eye_yaw_max)
+        neck_yaw_max = min(CHANNELS["neck_rotation"].max_angle, target_yaw - eye_yaw_min)
+        base_neck_yaw_target = clamp(
             target_yaw,
             CHANNELS["neck_rotation"].min_angle,
             CHANNELS["neck_rotation"].max_angle,
         )
+        neck_yaw_target = clamp(base_neck_yaw_target + stretch_yaw, neck_yaw_min, neck_yaw_max)
         neck_yaw = step_first_order(
             current=neck_yaw,
             target=neck_yaw_target,
@@ -724,11 +853,16 @@ def render_gaze_corners_curves(
             dt_ms=interval_ms,
             max_speed_dps=config.neck_yaw_max_speed_dps,
         )
-        neck_pitch_target = clamp(
+        eye_pitch_min = max(CHANNELS["eye_updown"].min_angle, -config.eye_pitch_limit_deg)
+        eye_pitch_max = min(CHANNELS["eye_updown"].max_angle, config.eye_pitch_limit_deg)
+        neck_pitch_min = max(CHANNELS["neck_elevation"].min_angle, target_pitch - eye_pitch_max)
+        neck_pitch_max = min(CHANNELS["neck_elevation"].max_angle, target_pitch - eye_pitch_min)
+        base_neck_pitch_target = clamp(
             target_pitch,
             CHANNELS["neck_elevation"].min_angle,
             CHANNELS["neck_elevation"].max_angle,
         )
+        neck_pitch_target = clamp(base_neck_pitch_target + stretch_pitch, neck_pitch_min, neck_pitch_max)
         neck_pitch = step_first_order(
             current=neck_pitch,
             target=neck_pitch_target,
@@ -736,9 +870,19 @@ def render_gaze_corners_curves(
             dt_ms=interval_ms,
             max_speed_dps=config.neck_pitch_max_speed_dps,
         )
+        neck_tilt_target = clamp(
+            base_neck_tilt + stretch_tilt,
+            CHANNELS["neck_tilt"].min_angle,
+            CHANNELS["neck_tilt"].max_angle,
+        )
+        neck_tilt = step_first_order(
+            current=neck_tilt,
+            target=neck_tilt_target,
+            tau_ms=config.neck_tilt_tau_ms,
+            dt_ms=interval_ms,
+            max_speed_dps=config.neck_tilt_max_speed_dps,
+        )
 
-        eye_yaw_min = max(CHANNELS["eye_leftright"].min_angle, -config.eye_yaw_limit_deg)
-        eye_yaw_max = min(CHANNELS["eye_leftright"].max_angle, config.eye_yaw_limit_deg)
         desired_eye_yaw = clamp(target_yaw - neck_yaw, eye_yaw_min, eye_yaw_max)
         eye_yaw = step_first_order(
             current=eye_yaw,
@@ -747,8 +891,6 @@ def render_gaze_corners_curves(
             dt_ms=interval_ms,
             max_speed_dps=config.eye_yaw_max_speed_dps,
         )
-        eye_pitch_min = max(CHANNELS["eye_updown"].min_angle, -config.eye_pitch_limit_deg)
-        eye_pitch_max = min(CHANNELS["eye_updown"].max_angle, config.eye_pitch_limit_deg)
         desired_eye_pitch = clamp(target_pitch - neck_pitch, eye_pitch_min, eye_pitch_max)
         eye_pitch = step_first_order(
             current=eye_pitch,
@@ -787,6 +929,7 @@ def render_gaze_corners_curves(
         eye_pitch_byte = CHANNELS["eye_updown"].byte_from_angle(eye_pitch)
         neck_yaw_byte = CHANNELS["neck_rotation"].byte_from_angle(neck_yaw)
         neck_pitch_byte = CHANNELS["neck_elevation"].byte_from_angle(neck_pitch)
+        neck_tilt_byte = CHANNELS["neck_tilt"].byte_from_angle(neck_tilt)
         duration_ticks = duration_ms_to_ticks(interval_ms)
         target_by_channel = {
             "eyelid_left": eyelid_left_byte,
@@ -795,6 +938,7 @@ def render_gaze_corners_curves(
             "eye_updown": eye_pitch_byte,
             "neck_elevation": neck_pitch_byte,
             "neck_rotation": neck_yaw_byte,
+            "neck_tilt": neck_tilt_byte,
         }
         targets = tuple(target_by_channel[channel] for channel in render_channels)
         append_keyframe(keyframes, targets, duration_ticks)
@@ -813,6 +957,8 @@ def render_gaze_corners_curves(
                 eyelid_right_byte=eyelid_right_byte,
                 neck_yaw_byte=neck_yaw_byte,
                 neck_pitch_byte=neck_pitch_byte,
+                neck_tilt=neck_tilt,
+                neck_tilt_byte=neck_tilt_byte,
             )
         )
         t_ms += interval_ms
@@ -844,6 +990,57 @@ def gaze_start_pose_command(eyelid_offset: float) -> Command:
         payload=base.payload,
         delay_after=base.delay_after,
         show_rx=base.show_rx,
+    )
+
+
+def render_neck_stretch(
+    *,
+    initial_state: GazeControllerState | None = None,
+    target_yaw: float | None = None,
+    target_pitch: float | None = None,
+    eyelid_offset: float = -2.0,
+    sample_ms: float = NECK_STRETCH_DEFAULT_SAMPLE_MS,
+    pitch_deg: float = NECK_STRETCH_DEFAULT_PITCH_DEG,
+    yaw_deg: float = NECK_STRETCH_DEFAULT_YAW_DEG,
+    tilt_deg: float = NECK_STRETCH_DEFAULT_TILT_DEG,
+    duration_ms: float = NECK_STRETCH_DEFAULT_DURATION_MS,
+    settle_ms: float = NECK_STRETCH_SETTLE_MS,
+    name: str = "neck_stretch",
+) -> tuple[RenderedAnimation, tuple[GazeCornerSample, ...]]:
+    if initial_state is None:
+        initial_state = GazeControllerState(0.0, 0.0, 0.0, 0.0, neck_tilt=0.0)
+    if target_yaw is None:
+        target_yaw = initial_state.eye_yaw + initial_state.neck_yaw
+    if target_pitch is None:
+        target_pitch = initial_state.eye_pitch + initial_state.neck_pitch
+
+    event = NeckStretchEvent(
+        start_ms=0.0,
+        pitch_deg=pitch_deg,
+        yaw_deg=yaw_deg,
+        tilt_deg=tilt_deg,
+        duration_ms=duration_ms,
+        settle_ms=settle_ms,
+    )
+    total_ms = neck_stretch_event_end_ms(event)
+    yaw_curve, pitch_curve = gaze_to_curves(target_yaw, target_pitch, total_ms)
+    effective_sample_ms = sample_ms_for_merged_script(
+        sample_ms,
+        len(GAZE_TO_STRETCH_CHANNELS),
+        yaw_curve,
+        pitch_curve,
+        (),
+        (event,),
+    )
+    return render_gaze_corners_curves(
+        yaw_curve,
+        pitch_curve,
+        config=GazeCornersConfig(sample_ms=effective_sample_ms),
+        name=name,
+        initial_state=initial_state,
+        include_eyelids=True,
+        eyelid_offset=eyelid_offset,
+        neck_stretch_events=(event,),
     )
 
 
@@ -1527,6 +1724,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Blink eyelids using the current eye pitch as the non-blink baseline.",
     )
     parser.add_argument(
+        "--neck-stretch",
+        action="store_true",
+        help="Run a gaze-preserving neck stretch around the current gaze direction.",
+    )
+    parser.add_argument(
         "--gaze-to",
         type=parse_gaze_to,
         metavar="YAW[,PITCH]",
@@ -1652,6 +1854,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Closed eyelid angle in degrees. Default: {BLINK_DEFAULT_CLOSED_ANGLE:g}.",
     )
     parser.add_argument(
+        "--neck-stretch-pitch",
+        type=float,
+        default=NECK_STRETCH_DEFAULT_PITCH_DEG,
+        metavar="DEG",
+        help=f"Neck elevation stretch amplitude. Default: {NECK_STRETCH_DEFAULT_PITCH_DEG:g} deg.",
+    )
+    parser.add_argument(
+        "--neck-stretch-yaw",
+        type=float,
+        default=NECK_STRETCH_DEFAULT_YAW_DEG,
+        metavar="DEG",
+        help=f"Neck yaw stretch amplitude. Default: {NECK_STRETCH_DEFAULT_YAW_DEG:g} deg.",
+    )
+    parser.add_argument(
+        "--neck-stretch-tilt",
+        type=float,
+        default=NECK_STRETCH_DEFAULT_TILT_DEG,
+        metavar="DEG",
+        help=f"Neck tilt stretch amplitude. Default: {NECK_STRETCH_DEFAULT_TILT_DEG:g} deg.",
+    )
+    parser.add_argument(
+        "--neck-stretch-duration-ms",
+        type=float,
+        default=NECK_STRETCH_DEFAULT_DURATION_MS,
+        help=f"Active neck stretch duration. Default: {NECK_STRETCH_DEFAULT_DURATION_MS:g} ms.",
+    )
+    parser.add_argument(
+        "--neck-stretch-settle-ms",
+        type=float,
+        default=NECK_STRETCH_SETTLE_MS,
+        help=f"Extra settle time after the stretch offsets return to zero. Default: {NECK_STRETCH_SETTLE_MS:g} ms.",
+    )
+    parser.add_argument(
+        "--neck-stretch-sample-ms",
+        type=float,
+        default=NECK_STRETCH_DEFAULT_SAMPLE_MS,
+        help=f"Sampling interval for --neck-stretch. Default: {NECK_STRETCH_DEFAULT_SAMPLE_MS:g} ms.",
+    )
+    parser.add_argument(
         "--test-neck-speed",
         action="store_true",
         help="Measure neck rotation step response using feedback from the motorboard.",
@@ -1749,6 +1990,8 @@ def _print_gaze_corners_outputs(
         if include_eyelids:
             header += ",eyelid_left_byte,eyelid_right_byte"
         header += ",neck_yaw_byte,neck_pitch_byte"
+        if "neck_tilt" in rendered.channels:
+            header += ",neck_tilt,neck_tilt_byte"
         print(header)
         for sample in samples:
             row = (
@@ -1765,6 +2008,8 @@ def _print_gaze_corners_outputs(
             if include_eyelids:
                 row += f",{sample.eyelid_left_byte},{sample.eyelid_right_byte}"
             row += f",{sample.neck_yaw_byte},{sample.neck_pitch_byte}"
+            if "neck_tilt" in rendered.channels:
+                row += f",{sample.neck_tilt:.2f},{sample.neck_tilt_byte}"
             print(row)
 
 
@@ -1910,6 +2155,121 @@ def run_blink(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_neck_stretch(args: argparse.Namespace) -> int:
+    name = "neck_stretch"
+
+    def render(initial_state: GazeControllerState) -> tuple[RenderedAnimation, tuple[GazeCornerSample, ...]]:
+        return render_neck_stretch(
+            initial_state=initial_state,
+            eyelid_offset=args.eyelid_offset,
+            sample_ms=args.neck_stretch_sample_ms,
+            pitch_deg=args.neck_stretch_pitch,
+            yaw_deg=args.neck_stretch_yaw,
+            tilt_deg=args.neck_stretch_tilt,
+            duration_ms=args.neck_stretch_duration_ms,
+            settle_ms=args.neck_stretch_settle_ms,
+            name=name,
+        )
+
+    if args.dry_run:
+        try:
+            rendered, samples = render(GazeControllerState(0.0, 0.0, 0.0, 0.0, neck_tilt=0.0))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+        _print_gaze_corners_outputs(args, rendered, samples)
+        commands: list[Command] = [STARTUP_COMMANDS[0], rendered.command()]
+        if args.power_off:
+            commands.append(POWER_OFF)
+        for item in commands:
+            print(f"{item.name}: {format_hex(packet(item.payload))}")
+        return 0
+
+    started_at = time.monotonic()
+    feedback_decoder = FeedbackDecoder()
+    latest_frame: list[FeedbackFrame | None] = [None]
+    listen_s = max(args.gaze_to_listen_ms / 1000.0, 0.05)
+
+    def on_rx(data: bytes) -> None:
+        if args.verbose:
+            print_rx(data, started_at)
+        for frame in feedback_decoder.feed(data, time.monotonic() - started_at):
+            latest_frame[0] = frame
+
+    with RobotMotion(args.port, args.baudrate) as robot:
+        port = robot.serial_port
+        for command in (STARTUP_COMMANDS[0], read_command("read_vr_values", 0x40)):
+            tx = packet(command.payload)
+            if args.verbose:
+                print(
+                    f"TX +{time.monotonic() - started_at:0.3f}s {command.name}: {format_hex(tx)}",
+                    flush=True,
+                )
+            port.write(tx)
+            port.flush()
+
+        deadline = time.monotonic() + listen_s
+        while time.monotonic() < deadline:
+            read_available(port, 0.025, on_rx)
+
+        if latest_frame[0] is None:
+            print(
+                f"could not capture pose feedback within {args.gaze_to_listen_ms:.0f} ms; "
+                "is the motorboard powered and connected?",
+                file=sys.stderr,
+            )
+            return 2
+
+        frame = latest_frame[0]
+        initial_state = GazeControllerState(
+            eye_yaw=frame.angle("eye_leftright"),
+            eye_pitch=frame.angle("eye_updown"),
+            neck_yaw=frame.angle("neck_rotation"),
+            neck_pitch=frame.angle("neck_elevation"),
+            neck_tilt=frame.angle("neck_tilt"),
+            eyelid_left=frame.angle("eyelid_left"),
+            eyelid_right=frame.angle("eyelid_right"),
+        )
+        if args.verbose:
+            print(
+                f"current pose: eye_yaw={initial_state.eye_yaw:.2f} "
+                f"eye_pitch={initial_state.eye_pitch:.2f} "
+                f"neck_yaw={initial_state.neck_yaw:.2f} "
+                f"neck_pitch={initial_state.neck_pitch:.2f} "
+                f"neck_tilt={initial_state.neck_tilt:.2f}",
+                flush=True,
+            )
+
+        try:
+            rendered, samples = render(initial_state)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+        _print_gaze_corners_outputs(args, rendered, samples)
+        commands = [rendered.command()]
+        if args.power_off:
+            commands.append(POWER_OFF)
+
+        def handle_tx(item: Command, tx_bytes: bytes) -> None:
+            if args.verbose:
+                print(
+                    f"TX +{time.monotonic() - started_at:0.3f}s {item.name}: {format_hex(tx_bytes)}",
+                    flush=True,
+                )
+
+        robot.run_commands(
+            commands,
+            listen_before=0.0,
+            listen_after=args.listen_after,
+            tx_callback=handle_tx if args.verbose else None,
+            rx_callback=on_rx if args.verbose else None,
+        )
+
+    return 0
+
+
 def run_gaze_to(args: argparse.Namespace) -> int:
     target_yaw, target_pitch = args.gaze_to
     try:
@@ -1995,6 +2355,7 @@ def run_gaze_to(args: argparse.Namespace) -> int:
             eye_pitch=frame.angle("eye_updown"),
             neck_yaw=frame.angle("neck_rotation"),
             neck_pitch=frame.angle("neck_elevation"),
+            neck_tilt=frame.angle("neck_tilt"),
             eyelid_left=frame.angle("eyelid_left"),
             eyelid_right=frame.angle("eyelid_right"),
         )
@@ -2003,7 +2364,8 @@ def run_gaze_to(args: argparse.Namespace) -> int:
                 f"current pose: eye_yaw={initial_state.eye_yaw:.2f} "
                 f"eye_pitch={initial_state.eye_pitch:.2f} "
                 f"neck_yaw={initial_state.neck_yaw:.2f} "
-                f"neck_pitch={initial_state.neck_pitch:.2f}",
+                f"neck_pitch={initial_state.neck_pitch:.2f} "
+                f"neck_tilt={initial_state.neck_tilt:.2f}",
                 flush=True,
             )
 
@@ -2052,6 +2414,7 @@ def main() -> int:
         args.gaze is not None,
         args.gaze_to is not None,
         args.blink,
+        args.neck_stretch,
         args.demo_gaze_yaw is not None,
         args.demo_gaze_corners,
         args.test_neck_speed,
@@ -2061,7 +2424,7 @@ def main() -> int:
         print(
             "choose one mode, for example --gaze-to, --demo-gaze-yaw, "
             "--demo-gaze-corners, --test-neck-speed, --test-servo-speeds, "
-            "--blink, or --gaze '-30,0,800;20,0,800'",
+            "--blink, --neck-stretch, or --gaze '-30,0,800;20,0,800'",
             file=sys.stderr,
         )
         return 2
@@ -2073,6 +2436,8 @@ def main() -> int:
         return run_gaze_to(args)
     if args.blink:
         return run_blink(args)
+    if args.neck_stretch:
+        return run_neck_stretch(args)
 
     try:
         if args.test_neck_speed:
@@ -2185,6 +2550,8 @@ def main() -> int:
             if include_eyelids:
                 header += ",eyelid_left_byte,eyelid_right_byte"
             header += ",neck_yaw_byte,neck_pitch_byte"
+            if rendered is not None and "neck_tilt" in rendered.channels:
+                header += ",neck_tilt,neck_tilt_byte"
             print(header)
             for sample in samples:
                 row = (
@@ -2201,6 +2568,8 @@ def main() -> int:
                 if include_eyelids:
                     row += f",{sample.eyelid_left_byte},{sample.eyelid_right_byte}"
                 row += f",{sample.neck_yaw_byte},{sample.neck_pitch_byte}"
+                if rendered is not None and "neck_tilt" in rendered.channels:
+                    row += f",{sample.neck_tilt:.2f},{sample.neck_tilt_byte}"
                 print(row)
 
     if args.dry_run:

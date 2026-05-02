@@ -92,6 +92,45 @@ Biblioteksfunktionerna `min_duration_ms_for_angle_step()` och
 `validate_angle_step_duration()` finns för att framtida animationer ska kunna
 kontrollera om ett tänkt steg faktiskt hinner genomföras.
 
+## Neck stretch
+
+Neck stretch är inte en rå kopia av fabriksanimationen
+`Neck_Elevation_Stretch`, eftersom den skulle flytta blickriktningen.
+I animationslagret är stretch i stället en overlay runt aktuell gaze-bas:
+
+```bash
+python3 /home/pi/robot_animation.py --neck-stretch --verbose
+```
+
+Renderingen skickar sju kanaler:
+
+```text
+eyelid_left, eyelid_right,
+eye_leftright, eye_updown,
+neck_elevation, neck_rotation, neck_tilt
+```
+
+Nackens `neck_elevation`, `neck_rotation` och `neck_tilt` får mjuka relativa
+offsets. Samtidigt räknas ögonens yaw/pitch om som:
+
+```text
+eye = target_gaze - actual_neck
+```
+
+Det gör att roboten behåller samma gaze under och efter stretchen så långt
+ögonens mätta rörelseutrymme räcker. Om blicken redan ligger nära en mekanisk
+gräns clampas nack-offseten hellre ned än att gaze tappar target.
+
+Default är konservativt:
+
+```text
+pitch amplitude  6 deg
+yaw amplitude    7 deg
+tilt amplitude   5 deg
+active duration  3700 ms
+settle time       700 ms
+```
+
 ## Yaw-gaze med ögon först
 
 För naturlig blick i yaw-led beskriver lagret först en targetkurva:

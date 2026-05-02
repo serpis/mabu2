@@ -22,6 +22,7 @@ python3 /home/pi/robot_engine.py --no-idle-blink
 gaze YAW[,PITCH] [DURATION_MS]
 gaze YAW PITCH [DURATION_MS]
 blink
+stretch
 idle on
 idle off
 interval SECONDS
@@ -34,14 +35,34 @@ Exempel:
 ```text
 gaze 25,5 1500
 blink
+stretch
 gaze -20 0 1200
 idle off
 status
 quit
 ```
 
-Om flera `gaze` skickas medan motorboardet kör sparas bara den senaste som
-pending gaze. Det undviker att engine bygger en lång intern kö.
+## Timeline
+
+Engine skiljer på schemaläggning och rendering. Kommandon lägger
+högnivåevents på en tidslinje:
+
+```text
+TimelineGaze(start, yaw, pitch, duration)
+TimelineBlink(start, reason)
+TimelineNeckStretch(start, amplitudes, duration)
+```
+
+När motorboardet är idle och det finns ett event vid `t=0` renderar engine
+hela tidslinjen fram till nästa idle-punkt. Det betyder att gaze, blink och
+andra overlays samplas tillsammans och skickas som ett komplett script. Gaze
+och blink använder sex kanaler; neck stretch använder sju eftersom `neck_tilt`
+behövs. Nya `gaze`-kommandon läggs vid `t=0` om boarden är idle, annars efter
+det script eller den explicita gaze som redan ligger först i kön.
+
+Idle-blinkar är inte permanenta köposter. De genereras från `--blink-interval`
+när roboten faktiskt är idle, och framtida idle-blinkar kan flyttas om ett
+explicit gaze-kommando kommer in.
 
 ## Idle-detektion
 
@@ -57,10 +78,10 @@ inte fastnar i `settling`.
 
 ## Blink
 
-Idle-blinkar injiceras ungefär var `--blink-interval` sekund. Om engine ändå
-ska rendera ett gaze-script och en blink ligger inom scriptets tidsfönster
-bakas blink in i samma 6-kanals keyframe-script. Om inget gaze körs skickas
-blink som ett kort eyelid-only script när boarden är idle.
+Idle-blinkar schemaläggs ungefär var `--blink-interval` sekund när roboten är
+idle. Blink renderas med samma timeline-renderare som gaze: om inget gaze är
+aktivt blir det ett 6-kanals script där ögon/nacke hålls vid aktuell pose och
+ögonlocken blinkar.
 
 När en blink bakas in nära slutet av ett gaze-script förlängs renderfönstret
 tills blinkens öppningsfas är klar. Det merge:ade resultatet ska alltid
@@ -85,3 +106,19 @@ final_eyelid = mix(base_eyelid, closed_eyelid, blink_weight)
 
 Det betyder att gaze inte behöver känna till blink och blink inte behöver veta
 vilken gaze som är aktiv.
+
+## Neck Stretch
+
+`stretch` och `neck-stretch` schemalägger en nackstretch efter redan köade
+explicita events. Om engine är idle körs den direkt.
+
+Stretchen är gaze-preserving. Den utgår från aktuell blickriktning:
+
+```text
+target_yaw = eye_leftright + neck_rotation
+target_pitch = eye_updown + neck_elevation
+```
+
+Sedan läggs mjuka offsets på nackens elevation/rotation/tilt, medan ögonen
+kompenserar yaw/pitch så att samma target behålls under rörelsen. Vid mekaniska
+gränser reduceras nack-offseten hellre än att target tappas.
