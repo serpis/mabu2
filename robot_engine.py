@@ -29,6 +29,11 @@ from robot_animation import (
     NECK_STRETCH_DEFAULT_SAMPLE_MS,
     NECK_STRETCH_DEFAULT_TILT_DEG,
     NECK_STRETCH_DEFAULT_YAW_DEG,
+    NECK_STRETCH_EYE_PITCH_LIMIT_DEG,
+    NECK_STRETCH_EYE_TAU_MS,
+    NECK_STRETCH_NECK_PITCH_TAU_MS,
+    NECK_STRETCH_NECK_TILT_TAU_MS,
+    NECK_STRETCH_NECK_YAW_TAU_MS,
     NECK_STRETCH_SETTLE_MS,
     NeckStretchEvent,
     blink_base_eyelid_angle,
@@ -605,10 +610,20 @@ class RobotEngine:
             blink_events,
             neck_stretch_events,
         )
+        render_config = GazeCornersConfig(sample_ms=sample_ms)
+        if neck_stretch_events:
+            render_config = GazeCornersConfig(
+                sample_ms=sample_ms,
+                eye_tau_ms=NECK_STRETCH_EYE_TAU_MS,
+                eye_pitch_limit_deg=NECK_STRETCH_EYE_PITCH_LIMIT_DEG,
+                neck_stretch_yaw_tau_ms=NECK_STRETCH_NECK_YAW_TAU_MS,
+                neck_stretch_pitch_tau_ms=NECK_STRETCH_NECK_PITCH_TAU_MS,
+                neck_stretch_tilt_tau_ms=NECK_STRETCH_NECK_TILT_TAU_MS,
+            )
         rendered, _samples = render_gaze_corners_curves(
             yaw_curve,
             pitch_curve,
-            config=GazeCornersConfig(sample_ms=sample_ms),
+            config=render_config,
             name="engine_timeline",
             initial_state=self.current_controller_state(),
             include_eyelids=True,

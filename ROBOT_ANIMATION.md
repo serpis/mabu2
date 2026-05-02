@@ -121,15 +121,20 @@ Det gör att roboten behåller samma gaze under och efter stretchen så långt
 ögonens mätta rörelseutrymme räcker. Om blicken redan ligger nära en mekanisk
 gräns clampas nack-offseten hellre ned än att gaze tappar target.
 
-Default är konservativt:
+Default är närmare uttrycket i fabriksanimationen `Neck_Elevation_Stretch`,
+men fortfarande gaze-preserving:
 
 ```text
-pitch amplitude  6 deg
-yaw amplitude    7 deg
-tilt amplitude   5 deg
-active duration  3700 ms
-settle time       700 ms
+pitch amplitude 13 deg
+yaw amplitude    9 deg
+tilt amplitude   7 deg
+active duration  3200 ms
+settle time       500 ms
 ```
+
+Stretch-offseten har en egen snabbare nackrespons än vanlig gaze. Vanlig
+gaze får alltså behålla sin långsamma nackföljning, medan stretch faktiskt når
+fram till tydliga nackvändningar innan den går tillbaka.
 
 ## Yaw-gaze med ögon först
 

@@ -73,12 +73,17 @@ BLINK_DEFAULT_CLOSE_MS = 360.0
 BLINK_DEFAULT_HOLD_MS = 0.0
 BLINK_DEFAULT_OPEN_MS = 360.0
 BLINK_OVERLAY_SETTLE_MS = 400.0
-NECK_STRETCH_DEFAULT_PITCH_DEG = 6.0
-NECK_STRETCH_DEFAULT_YAW_DEG = 7.0
-NECK_STRETCH_DEFAULT_TILT_DEG = 5.0
-NECK_STRETCH_DEFAULT_DURATION_MS = 3700.0
-NECK_STRETCH_SETTLE_MS = 700.0
-NECK_STRETCH_DEFAULT_SAMPLE_MS = 120.0
+NECK_STRETCH_DEFAULT_PITCH_DEG = 13.0
+NECK_STRETCH_DEFAULT_YAW_DEG = 9.0
+NECK_STRETCH_DEFAULT_TILT_DEG = 7.0
+NECK_STRETCH_DEFAULT_DURATION_MS = 3200.0
+NECK_STRETCH_SETTLE_MS = 500.0
+NECK_STRETCH_DEFAULT_SAMPLE_MS = 125.0
+NECK_STRETCH_EYE_TAU_MS = 35.0
+NECK_STRETCH_NECK_YAW_TAU_MS = 140.0
+NECK_STRETCH_NECK_PITCH_TAU_MS = 100.0
+NECK_STRETCH_NECK_TILT_TAU_MS = 120.0
+NECK_STRETCH_EYE_PITCH_LIMIT_DEG = 14.0
 REACHABLE_RANGE_EPS_DEG = 0.05
 
 
@@ -360,6 +365,9 @@ class GazeCornersConfig:
     neck_yaw_tau_ms: float = 650.0
     neck_pitch_tau_ms: float = 500.0
     neck_tilt_tau_ms: float = 500.0
+    neck_stretch_yaw_tau_ms: float = NECK_STRETCH_NECK_YAW_TAU_MS
+    neck_stretch_pitch_tau_ms: float = NECK_STRETCH_NECK_PITCH_TAU_MS
+    neck_stretch_tilt_tau_ms: float = NECK_STRETCH_NECK_TILT_TAU_MS
     eye_yaw_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["eye_leftright"]
     eye_pitch_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["eye_updown"]
     eyelid_max_speed_dps: float = min(
@@ -748,6 +756,9 @@ def render_gaze_corners_curves(
         or config.neck_yaw_tau_ms <= 0
         or config.neck_pitch_tau_ms <= 0
         or config.neck_tilt_tau_ms <= 0
+        or config.neck_stretch_yaw_tau_ms <= 0
+        or config.neck_stretch_pitch_tau_ms <= 0
+        or config.neck_stretch_tilt_tau_ms <= 0
     ):
         raise ValueError("gaze controller tau values must be > 0")
     if (
@@ -823,6 +834,11 @@ def render_gaze_corners_curves(
             CHANNELS["eyelid_right"].max_angle,
         )
     base_neck_tilt = neck_tilt
+    base_neck_yaw = neck_yaw
+    base_neck_pitch = neck_pitch
+    stretch_neck_yaw = 0.0
+    stretch_neck_pitch = 0.0
+    stretch_neck_tilt = 0.0
     samples: list[GazeCornerSample] = []
     keyframes: list[tuple[int, ...]] = []
 
@@ -845,13 +861,29 @@ def render_gaze_corners_curves(
             CHANNELS["neck_rotation"].min_angle,
             CHANNELS["neck_rotation"].max_angle,
         )
-        neck_yaw_target = clamp(base_neck_yaw_target + stretch_yaw, neck_yaw_min, neck_yaw_max)
-        neck_yaw = step_first_order(
-            current=neck_yaw,
-            target=neck_yaw_target,
+        base_neck_yaw = step_first_order(
+            current=base_neck_yaw,
+            target=base_neck_yaw_target,
             tau_ms=config.neck_yaw_tau_ms,
             dt_ms=interval_ms,
             max_speed_dps=config.neck_yaw_max_speed_dps,
+        )
+        stretch_yaw_target = clamp(
+            stretch_yaw,
+            neck_yaw_min - base_neck_yaw,
+            neck_yaw_max - base_neck_yaw,
+        )
+        stretch_neck_yaw = step_first_order(
+            current=stretch_neck_yaw,
+            target=stretch_yaw_target,
+            tau_ms=config.neck_stretch_yaw_tau_ms,
+            dt_ms=interval_ms,
+            max_speed_dps=config.neck_yaw_max_speed_dps,
+        )
+        neck_yaw = clamp(
+            base_neck_yaw + stretch_neck_yaw,
+            CHANNELS["neck_rotation"].min_angle,
+            CHANNELS["neck_rotation"].max_angle,
         )
         eye_pitch_min = max(CHANNELS["eye_updown"].min_angle, -config.eye_pitch_limit_deg)
         eye_pitch_max = min(CHANNELS["eye_updown"].max_angle, config.eye_pitch_limit_deg)
@@ -862,25 +894,44 @@ def render_gaze_corners_curves(
             CHANNELS["neck_elevation"].min_angle,
             CHANNELS["neck_elevation"].max_angle,
         )
-        neck_pitch_target = clamp(base_neck_pitch_target + stretch_pitch, neck_pitch_min, neck_pitch_max)
-        neck_pitch = step_first_order(
-            current=neck_pitch,
-            target=neck_pitch_target,
+        base_neck_pitch = step_first_order(
+            current=base_neck_pitch,
+            target=base_neck_pitch_target,
             tau_ms=config.neck_pitch_tau_ms,
             dt_ms=interval_ms,
             max_speed_dps=config.neck_pitch_max_speed_dps,
         )
-        neck_tilt_target = clamp(
-            base_neck_tilt + stretch_tilt,
-            CHANNELS["neck_tilt"].min_angle,
-            CHANNELS["neck_tilt"].max_angle,
+        stretch_pitch_target = clamp(
+            stretch_pitch,
+            neck_pitch_min - base_neck_pitch,
+            neck_pitch_max - base_neck_pitch,
         )
-        neck_tilt = step_first_order(
-            current=neck_tilt,
-            target=neck_tilt_target,
-            tau_ms=config.neck_tilt_tau_ms,
+        stretch_neck_pitch = step_first_order(
+            current=stretch_neck_pitch,
+            target=stretch_pitch_target,
+            tau_ms=config.neck_stretch_pitch_tau_ms,
+            dt_ms=interval_ms,
+            max_speed_dps=config.neck_pitch_max_speed_dps,
+        )
+        neck_pitch = clamp(
+            base_neck_pitch + stretch_neck_pitch,
+            CHANNELS["neck_elevation"].min_angle,
+            CHANNELS["neck_elevation"].max_angle,
+        )
+        stretch_tilt_min = CHANNELS["neck_tilt"].min_angle - base_neck_tilt
+        stretch_tilt_max = CHANNELS["neck_tilt"].max_angle - base_neck_tilt
+        stretch_tilt_target = clamp(stretch_tilt, stretch_tilt_min, stretch_tilt_max)
+        stretch_neck_tilt = step_first_order(
+            current=stretch_neck_tilt,
+            target=stretch_tilt_target,
+            tau_ms=config.neck_stretch_tilt_tau_ms,
             dt_ms=interval_ms,
             max_speed_dps=config.neck_tilt_max_speed_dps,
+        )
+        neck_tilt = clamp(
+            base_neck_tilt + stretch_neck_tilt,
+            CHANNELS["neck_tilt"].min_angle,
+            CHANNELS["neck_tilt"].max_angle,
         )
 
         desired_eye_yaw = clamp(target_yaw - neck_yaw, eye_yaw_min, eye_yaw_max)
@@ -1035,7 +1086,14 @@ def render_neck_stretch(
     return render_gaze_corners_curves(
         yaw_curve,
         pitch_curve,
-        config=GazeCornersConfig(sample_ms=effective_sample_ms),
+        config=GazeCornersConfig(
+            sample_ms=effective_sample_ms,
+            eye_tau_ms=NECK_STRETCH_EYE_TAU_MS,
+            eye_pitch_limit_deg=NECK_STRETCH_EYE_PITCH_LIMIT_DEG,
+            neck_stretch_yaw_tau_ms=NECK_STRETCH_NECK_YAW_TAU_MS,
+            neck_stretch_pitch_tau_ms=NECK_STRETCH_NECK_PITCH_TAU_MS,
+            neck_stretch_tilt_tau_ms=NECK_STRETCH_NECK_TILT_TAU_MS,
+        ),
         name=name,
         initial_state=initial_state,
         include_eyelids=True,

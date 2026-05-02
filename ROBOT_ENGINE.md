@@ -122,3 +122,7 @@ target_pitch = eye_updown + neck_elevation
 Sedan läggs mjuka offsets på nackens elevation/rotation/tilt, medan ögonen
 kompenserar yaw/pitch så att samma target behålls under rörelsen. Vid mekaniska
 gränser reduceras nack-offseten hellre än att target tappas.
+
+Stretchen använder större amplituder och snabbare stretch-respons än vanlig
+gaze, så den ska läsa mer som fabriksappens neck-stretch utan att lämna roboten
+i neutral blick efteråt.
