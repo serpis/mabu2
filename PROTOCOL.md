@@ -852,14 +852,20 @@ Tolkning:
 - `mask` väljer kanal eller kanaler med samma bitmask som övriga kommandon
 - kanalordningen i ett 2-kanals-script följer maskordningen: `0x40`, `0x20`, `0x10`, `0x08`, `0x04`, `0x02`, `0x01`
 - `target` är samma 8-bitars positionsskala som positionskommandon och feedback använder
-- tredje värdet i 2-kanals-tupeln är mycket starkt indicerat som duration i tickar om cirka `5 ms`
+- tredje värdet i 2-kanals-tupeln är mycket starkt indicerat som duration i ticks
 - motorbordet kör scriptet lokalt efter att hela paketet skickats
 - under körning kommer bara vanliga `position_feedback`-paket tillbaka
 - appens `Points within/out of tolerance` verkar räknas app-side från feedbackströmmen, inte komma från motorbordet som egna resultatpaket
 
 Exempel: för `mask 0x60 = eyelid_left + eyelid_right` betyder tupeln
 `(31,217,100)` sannolikt `eyelid_left` target `31`,
-`eyelid_right` target `217`, och duration cirka `100 * 5 ms = 500 ms`.
+`eyelid_right` target `217`. På den testade Raspberry Pi/motorboard-
+uppsättningen verkar durationen vara cirka `100 * 10 ms = 1 s`.
+
+Obs: äldre app-captures nedan pekar mot cirka `5 ms/tick`, medan direkta
+`robot_motion.py`-tester på motorboardet pekar mot cirka `10 ms/tick`.
+För lokalt genererade raw scripts ska `10 ms/tick` användas tills motsatsen
+är mätt i samma setup.
 
 Det här stöds av både RX-tider och feedback i
 [dumps/animation_test_failed.json](dumps/animation_test_failed.json):
