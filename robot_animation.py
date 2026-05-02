@@ -71,6 +71,7 @@ BLINK_DEFAULT_CLOSED_ANGLE = -65.0
 BLINK_DEFAULT_CLOSE_MS = 360.0
 BLINK_DEFAULT_HOLD_MS = 0.0
 BLINK_DEFAULT_OPEN_MS = 360.0
+BLINK_OVERLAY_SETTLE_MS = 400.0
 REACHABLE_RANGE_EPS_DEG = 0.05
 
 
@@ -451,6 +452,39 @@ def blink_event_weight(t_ms: float, event: BlinkEvent) -> float:
     return 1.0 - normalized_time(t_ms, hold_end, open_end)
 
 
+def blink_event_end_ms(event: BlinkEvent) -> float:
+    return event.start_ms + event.close_ms + event.hold_ms + event.open_ms
+
+
+def blink_event_render_end_ms(event: BlinkEvent) -> float:
+    return blink_event_end_ms(event) + BLINK_OVERLAY_SETTLE_MS
+
+
+def merged_curve_end_ms(
+    yaw_curve: YawTargetCurve,
+    pitch_curve: YawTargetCurve,
+    blink_events: Sequence[BlinkEvent] = (),
+) -> float:
+    return max(
+        yaw_curve.end_ms,
+        pitch_curve.end_ms,
+        *(blink_event_render_end_ms(event) for event in blink_events),
+    )
+
+
+def sample_ms_for_merged_script(
+    requested_sample_ms: float,
+    channel_count: int,
+    yaw_curve: YawTargetCurve,
+    pitch_curve: YawTargetCurve,
+    blink_events: Sequence[BlinkEvent] = (),
+) -> float:
+    if channel_count <= 0:
+        raise ValueError("channel_count must be > 0")
+    max_frames = (255 - 3) // (channel_count + 1)
+    return max(requested_sample_ms, math.ceil(merged_curve_end_ms(yaw_curve, pitch_curve, blink_events) / max_frames))
+
+
 def blink_weight(t_ms: float, events: Sequence[BlinkEvent]) -> float:
     if not events:
         return 0.0
@@ -620,6 +654,7 @@ def render_gaze_corners_curves(
         blink_event_weight(event.start_ms, event)
         validate_channel_angle("eyelid_left", event.closed_angle, "blink closed angle")
         validate_channel_angle("eyelid_right", event.closed_angle, "blink closed angle")
+    render_end_ms = merged_curve_end_ms(yaw_curve, pitch_curve, blink_events)
 
     if initial_state is None:
         eye_yaw = 0.0
@@ -672,8 +707,8 @@ def render_gaze_corners_curves(
     keyframes: list[tuple[int, ...]] = []
 
     t_ms = yaw_curve.start_ms
-    while t_ms < yaw_curve.end_ms:
-        interval_ms = min(config.sample_ms, yaw_curve.end_ms - t_ms)
+    while t_ms < render_end_ms:
+        interval_ms = min(config.sample_ms, render_end_ms - t_ms)
         target_yaw = yaw_curve.sample(t_ms)
         target_pitch = pitch_curve.sample(t_ms)
 
@@ -1883,9 +1918,17 @@ def run_gaze_to(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    config = GazeCornersConfig(sample_ms=args.gaze_to_sample_ms)
     name = f"gaze_to_yaw={target_yaw:g}_pitch={target_pitch:g}"
     blink_events = blink_events_from_args(args)
+    config = GazeCornersConfig(
+        sample_ms=sample_ms_for_merged_script(
+            args.gaze_to_sample_ms,
+            len(GAZE_TO_CHANNELS),
+            yaw_curve,
+            pitch_curve,
+            blink_events,
+        )
+    )
 
     if args.dry_run:
         try:
@@ -2063,14 +2106,23 @@ def main() -> int:
                 hold_ms=args.gaze_corners_hold_ms,
                 return_ms=args.gaze_corners_return_ms,
             )
+            blink_events = blink_events_from_args(args)
             rendered, samples = render_gaze_corners_curves(
                 yaw_curve,
                 pitch_curve,
-                config=GazeCornersConfig(sample_ms=args.gaze_corners_sample_ms),
+                config=GazeCornersConfig(
+                    sample_ms=sample_ms_for_merged_script(
+                        args.gaze_corners_sample_ms,
+                        len(GAZE_TO_CHANNELS),
+                        yaw_curve,
+                        pitch_curve,
+                        blink_events,
+                    )
+                ),
                 name="demo_gaze_corners",
                 include_eyelids=True,
                 eyelid_offset=args.eyelid_offset,
-                blink_events=blink_events_from_args(args),
+                blink_events=blink_events,
             )
             command = rendered.command()
             commands = [*STARTUP_COMMANDS, gaze_start_pose_command(args.eyelid_offset), command]

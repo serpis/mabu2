@@ -62,6 +62,10 @@ ska rendera ett gaze-script och en blink ligger inom scriptets tidsfönster
 bakas blink in i samma 6-kanals keyframe-script. Om inget gaze körs skickas
 blink som ett kort eyelid-only script när boarden är idle.
 
+När en blink bakas in nära slutet av ett gaze-script förlängs renderfönstret
+tills blinkens öppningsfas är klar. Det merge:ade resultatet ska alltid
+innehålla hela gaze-rörelsen och hela blinkrörelsen.
+
 Defaultblinket är servoanpassat till `360 ms` stängning, `0 ms` hold och
 `360 ms` öppning.
 

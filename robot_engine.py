@@ -23,8 +23,10 @@ from robot_animation import (
     GazeCornersConfig,
     blink_base_eyelid_angle,
     gaze_to_curves,
+    merged_curve_end_ms,
     render_blink,
     render_gaze_corners_curves,
+    sample_ms_for_merged_script,
 )
 from robot_motion import (
     BAUDRATE,
@@ -357,8 +359,14 @@ class RobotEngine:
             gaze=gaze,
             gaze_jump_deg=gaze_jump_deg,
         )
-        max_frames = (255 - 3) // (len(GAZE_TO_CHANNELS) + 1)
-        sample_ms = max(self.config.gaze_sample_ms, math.ceil(gaze.dwell_ms / max_frames))
+        render_duration_ms = merged_curve_end_ms(yaw_curve, pitch_curve, blink_events)
+        sample_ms = sample_ms_for_merged_script(
+            self.config.gaze_sample_ms,
+            len(GAZE_TO_CHANNELS),
+            yaw_curve,
+            pitch_curve,
+            blink_events,
+        )
         rendered, _samples = render_gaze_corners_curves(
             yaw_curve,
             pitch_curve,
@@ -371,7 +379,8 @@ class RobotEngine:
         )
         self.log(
             f"gaze yaw={gaze.yaw:g} pitch={gaze.pitch:g} ms={gaze.dwell_ms:g} "
-            f"frames={len(rendered.keyframes)} blinks={len(blink_events)} "
+            f"render_ms={render_duration_ms:g} frames={len(rendered.keyframes)} "
+            f"blinks={len(blink_events)} "
             f"jump={gaze_jump_deg:.1f}deg"
         )
         self.send_rendered_command(rendered.command(), script_duration_s=rendered_duration_s(rendered.keyframes))

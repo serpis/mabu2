@@ -267,6 +267,11 @@ python3 /home/pi/robot_animation.py \
   --blink-at-ms 700,1500
 ```
 
+När blink bakas in i ett gaze-script renderas hela unionen av båda
+animationerna. Om en blink börjar nära slutet av gaze-fönstret förlängs alltså
+det merge:ade scriptet tills blinkens öppningsfas är klar, så ögonlocken inte
+stannar halvvägs.
+
 ## Pitch/yaw-hörn
 
 Hörndemoen använder samma "ögon först, nacke ikapp"-controller som
