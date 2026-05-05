@@ -179,6 +179,43 @@ Tolkning:
 - om andra rörelsen kommer först efter första scriptet: motorboardet köar script
 - om andra rörelsen aldrig syns: motorboardet ignorerar nytt script medan ett script kör
 
+## Interaktionstest
+
+[motion_interaction_test.py](motion_interaction_test.py) är den mer kompletta
+varianten. Det äger UART:en i en process, skickar två motionkommandon med
+kontrollerad offset, läser feedback under hela fönstret och skriver både råa
+samples och sammanfattning.
+
+```bash
+python3 /home/pi/motion_interaction_test.py --suite full --repeats 3 --power-off
+```
+
+Viktiga filer i output-katalogen:
+
+```text
+tx_events.csv   TX-tider och payloads
+samples.csv     feedback per kanal
+summary.csv     per-case klassificering och effekttider
+results.json    maskinläsbar sammanfattning
+run.log         konsollogg om kommandot körs med tee
+```
+
+Kör ett enskilt fall med filter:
+
+```bash
+python3 /home/pi/motion_interaction_test.py \
+  --case-filter disjoint_lid \
+  --repeats 3 \
+  --skip-baselines \
+  --power-off
+```
+
+Körningen 2026-05-03 pekar på kanalvis beteende snarare än global FIFO-kö:
+samma-kanals kommandon tar över vid nästa segmentgräns, medan kommandon på helt
+disjunkta kanaler kan börja medan första scriptet fortsätter. Se
+[MOTION_CONCURRENCY_STRATEGY.md](MOTION_CONCURRENCY_STRATEGY.md) för detaljerad
+resultatsammanfattning.
+
 ## Script-längdtest
 
 För att testa hur många keyframes motorboardet accepterar i ett script:

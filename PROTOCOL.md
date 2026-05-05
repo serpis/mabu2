@@ -1061,8 +1061,58 @@ Starkt indicerat:
 - `calibration_values` returnerar `7 x (min, max, range)` som little-endian `uint16`
 - det finns en scriptad rörelsekommando-familj under opcode `0x01`
 - 2-kanals-animationsscript använder keyframeformatet `0x80 | point_count` följt av `(value_a, value_b, duration)`-tripplar
+- samma `0x80 | point_count`-familj fungerade även för 1-kanals scripts i
+  `motion_interaction_test.py` 2026-05-03
 - PID-data är `big-endian float32`
 - kanalordningen är stabil mellan flera captures
+
+## Motion-script interaktioner under körning
+
+`motion_interaction_test.py` kördes 2026-05-03 med en enda UART-ägande process
+som skickade två motionkommandon med kontrollerad offset och samtidigt läste
+position-feedback.
+
+Resultatkataloger:
+
+```text
+/home/pi/motion_interaction_results/20260503-141230-full-r3
+/home/pi/motion_interaction_results/20260503-141841-disjoint-pos-r3
+```
+
+Lokal kopia:
+
+```text
+pi_results/20260503-141230-full-r3/
+pi_results/20260503-141841-disjoint-pos-r3/
+```
+
+Observerat:
+
+- motorbrädan beter sig inte som en enkel global script-FIFO
+- ett nytt kommando på samma aktiva kanal tar inte effekt omedelbart vid TX
+- samma-kanals takeover syns i feedback runt nästa keyframe-/segmentgräns plus
+  mekanisk/regleringslatens
+- när takeover sker syns inte återstående keyframes från första scriptet för
+  den övertagna kanalen
+- kommandon på helt disjunkta kanaler kan börja medan första scriptet fortsätter
+  på sina kanaler
+- ett positionskommando på en kanal som ingår i första scriptets mask, även om
+  den bara hålls neutral, väntar till den kanalens segmentgräns
+- all-kanals pose tar över aktiva kanaler på samma segmentgränsbaserade sätt
+
+Exempelvärden från körningen:
+
+| Fall | Andra TX | Effekt |
+| --- | ---: | --- |
+| långt ögonscript, nytt ögonscript samma kanaler | `0.45s` | `eye_leftright` gick mot andra target vid median `1.415s`, efter första framegränsen `1.2s` |
+| långt ögonscript, nytt ögonscript nära slutet | `2.70s` | effekt vid median `3.08s`, efter scriptets förväntade slut `2.9s` |
+| ögonscript, ögonlocksscript | `0.45s` | ögonlockseffekt `0.09-0.23s` efter TX; ögonscriptets senare neutral-keyframe syntes fortfarande |
+| ögonscript, `position eyelid_left` | `0.45s` | ögonlockseffekt `0.05-0.06s` efter TX; ögonscriptet fortsatte |
+| ögonscript, `position eye_leftright` | `0.45s` | position tog över vid segmentgräns; återstående ögon-keyframes syntes inte |
+
+Den bästa nuvarande modellen är kanalvis motion-state, inte global kö. Det är
+fortfarande möjligt att det finns fler specialfall för nackkanaler, extrema
+payloadlängder eller andra firmwareversioner.
 
 ## Sådant som fortfarande är oklart
 

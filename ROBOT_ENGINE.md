@@ -64,6 +64,15 @@ Idle-blinkar är inte permanenta köposter. De genereras från `--blink-interval
 när roboten faktiskt är idle, och framtida idle-blinkar kan flyttas om ett
 explicit gaze-kommando kommer in.
 
+För en mätstrategi kring nya kommandon medan ett script redan kör, inklusive
+skillnaden mellan ny animation och direkt "ställ in denna vinkel", se
+[MOTION_CONCURRENCY_STRATEGY.md](MOTION_CONCURRENCY_STRATEGY.md).
+
+Mätningen 2026-05-03 pekar på att motorbrädan har kanalvis takeover vid
+keyframe-/segmentgränser, inte en enkel global FIFO-kö. Engine är ändå
+konservativ här: den serialiserar renderade timeline-script globalt tills en
+eventuell framtida implementation explicit modellerar busy-state per kanal.
+
 ## Idle-detektion
 
 Engine räknar själv ut när ett skickat script borde vara klart:
