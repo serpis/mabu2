@@ -52,6 +52,7 @@ from robot_motion import (
     STARTUP_COMMANDS,
     RobotMotion,
     format_hex,
+    look_pose_command,
     packet,
     print_rx,
     read_command,
@@ -177,6 +178,55 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def default_engine_config(
+    *,
+    port: str = "/dev/ttyAMA0",
+    baudrate: int = BAUDRATE,
+    gaze_sample_ms: float = DEFAULT_GAZE_SAMPLE_MS,
+    eyelid_offset: float = -2.0,
+    idle_blink: bool = True,
+    blink_interval_s: float = DEFAULT_IDLE_BLINK_INTERVAL_S,
+    gaze_blink_threshold_deg: float = DEFAULT_GAZE_BLINK_THRESHOLD_DEG,
+    gaze_blink_refractory_s: float = DEFAULT_GAZE_BLINK_REFRACTORY_S,
+    blink_close_ms: float = BLINK_DEFAULT_CLOSE_MS,
+    blink_hold_ms: float = BLINK_DEFAULT_HOLD_MS,
+    blink_open_ms: float = BLINK_DEFAULT_OPEN_MS,
+    blink_closed_angle: float = BLINK_DEFAULT_CLOSED_ANGLE,
+    neck_stretch_sample_ms: float = NECK_STRETCH_DEFAULT_SAMPLE_MS,
+    neck_stretch_pitch_deg: float = NECK_STRETCH_DEFAULT_PITCH_DEG,
+    neck_stretch_yaw_deg: float = NECK_STRETCH_DEFAULT_YAW_DEG,
+    neck_stretch_tilt_deg: float = NECK_STRETCH_DEFAULT_TILT_DEG,
+    neck_stretch_duration_ms: float = NECK_STRETCH_DEFAULT_DURATION_MS,
+    neck_stretch_settle_ms: float = NECK_STRETCH_SETTLE_MS,
+    feedback_silence_s: float = DEFAULT_FEEDBACK_SILENCE_S,
+    done_fallback_s: float = DEFAULT_DONE_FALLBACK_S,
+    verbose: bool = False,
+) -> EngineConfig:
+    return EngineConfig(
+        port=port,
+        baudrate=baudrate,
+        gaze_sample_ms=gaze_sample_ms,
+        eyelid_offset=eyelid_offset,
+        idle_blink=idle_blink,
+        blink_interval_s=blink_interval_s,
+        gaze_blink_threshold_deg=gaze_blink_threshold_deg,
+        gaze_blink_refractory_s=gaze_blink_refractory_s,
+        blink_close_ms=blink_close_ms,
+        blink_hold_ms=blink_hold_ms,
+        blink_open_ms=blink_open_ms,
+        blink_closed_angle=blink_closed_angle,
+        neck_stretch_sample_ms=neck_stretch_sample_ms,
+        neck_stretch_pitch_deg=neck_stretch_pitch_deg,
+        neck_stretch_yaw_deg=neck_stretch_yaw_deg,
+        neck_stretch_tilt_deg=neck_stretch_tilt_deg,
+        neck_stretch_duration_ms=neck_stretch_duration_ms,
+        neck_stretch_settle_ms=neck_stretch_settle_ms,
+        feedback_silence_s=feedback_silence_s,
+        done_fallback_s=done_fallback_s,
+        verbose=verbose,
+    )
+
+
 def parse_gaze_line(parts: list[str]) -> PendingGaze:
     if len(parts) < 2:
         raise ValueError("usage: gaze YAW[,PITCH] [DURATION_MS] or gaze YAW PITCH [DURATION_MS]")
@@ -260,6 +310,18 @@ class RobotEngine:
 
     def send_rendered_command(self, command: Command, *, script_duration_s: float) -> None:
         self.send_wire_command(command, expected_duration_s=script_duration_s)
+
+    def send_direct_gaze(self, yaw: float, pitch: float) -> Command:
+        """Send a one-frame gaze pose immediately, bypassing the timeline."""
+        now = time.monotonic()
+        command = look_pose_command(yaw, pitch, self.config.eyelid_offset)
+        tx = packet(command.payload)
+        if self.config.verbose:
+            self.log(f"TX +{now - self.started_at:0.3f}s direct {command.name}: {format_hex(tx)}")
+        self.port.write(tx)
+        self.port.flush()
+        self.last_tx_at = now
+        return command
 
     def read_serial(self) -> None:
         waiting = self.port.in_waiting
