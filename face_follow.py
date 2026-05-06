@@ -23,6 +23,8 @@ class SharedCameraMjpegServer:
         *,
         port: int,
         calibration_file: str,
+        idle_blink: bool,
+        blink_interval_s: float,
     ) -> None:
         self.camera = camera
         self.port = port
@@ -45,6 +47,9 @@ class SharedCameraMjpegServer:
         self.manual_pitch = 0.0
         self.pending_manual_gaze: tuple[float, float] | None = None
         self.calibration_points: list[dict] = self._load_calibration_points()
+        self.blink_lock = threading.Lock()
+        self.idle_blink_enabled = idle_blink
+        self.blink_interval_s = blink_interval_s
 
     def set_debug(self, snapshot: dict) -> None:
         with self.debug_lock:
@@ -116,6 +121,7 @@ class SharedCameraMjpegServer:
                     {
                         **self.debug_snapshot,
                         "calibration": calibration,
+                        "blink": self._blink_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
                         "served_at": time.time(),
                     },
@@ -136,6 +142,14 @@ class SharedCameraMjpegServer:
                 body = self._handle_calibration_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._calibration_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/blink"):
+            try:
+                body = self._handle_blink_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._blink_state()}
             self._send_json(conn, body)
             return
 
@@ -204,6 +218,40 @@ class SharedCameraMjpegServer:
     def calibration_points_snapshot(self) -> list[dict]:
         with self.calibration_lock:
             return list(self.calibration_points)
+
+    def blink_state_snapshot(self) -> tuple[bool, float]:
+        with self.blink_lock:
+            return self.idle_blink_enabled, self.blink_interval_s
+
+    def _blink_state(self) -> dict:
+        with self.blink_lock:
+            return {
+                "idle_blink_enabled": self.idle_blink_enabled,
+                "blink_interval_s": self.blink_interval_s,
+            }
+
+    def _handle_blink_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._blink_state()
+
+        if action == "set":
+            enabled = params.get("enabled", [None])[0]
+            interval = params.get("interval", [None])[0]
+            with self.blink_lock:
+                if enabled is not None:
+                    self.idle_blink_enabled = enabled not in {"0", "false", "off", "no"}
+                if interval is not None:
+                    blink_interval_s = float(interval)
+                    if blink_interval_s <= 0:
+                        raise ValueError("blink interval must be > 0")
+                    self.blink_interval_s = blink_interval_s
+            return self._blink_state()
+
+        return {"error": f"unknown blink action: {action}", **self._blink_state()}
 
     def _handle_calibration_request(self, path: str) -> dict:
         parsed = urlsplit(path)
@@ -352,6 +400,12 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">target source</div><div class="v" id="targetSource">-</div></div>
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
     <div class="panel">
+      <h1>Blink</h1>
+      <label><input id="idleBlink" type="checkbox"> Idle blink</label>
+      <div class="row"><div class="k">interval s</div><div class="v"><input id="blinkInterval" type="number" min="0.5" step="0.5" value="4.0"></div></div>
+      <div class="row"><div class="k">state</div><div class="v" id="blinkState">-</div></div>
+    </div>
+    <div class="panel">
       <h1>Calibration</h1>
       <label><input id="manualMode" type="checkbox"> Direct from gaze pad</label>
       <div class="gaze-pad" id="gazePad">
@@ -386,6 +440,8 @@ function renderPiTemp(value){
   else if(value >= 65) status.classList.add("warm");
 }
 const manualMode=document.getElementById("manualMode");
+const idleBlink=document.getElementById("idleBlink");
+const blinkInterval=document.getElementById("blinkInterval");
 const gazePad=document.getElementById("gazePad");
 const gazeMarker=document.getElementById("gazeMarker");
 let manualYaw=0;
@@ -417,6 +473,27 @@ async function cal(action, extra={}){
   renderCalibration(d);
   return d;
 }
+async function blink(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/blink?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderBlink(d);
+  return d;
+}
+function blinkValues(){
+  return {
+    enabled: idleBlink.checked ? "1" : "0",
+    interval: blinkInterval.value || "4.0",
+  };
+}
+function renderBlink(b){
+  if(!b)return;
+  idleBlink.checked=!!b.idle_blink_enabled;
+  if(Number.isFinite(b.blink_interval_s) && document.activeElement !== blinkInterval){
+    blinkInterval.value=fmt(b.blink_interval_s);
+  }
+  document.getElementById("blinkState").textContent=`${b.idle_blink_enabled ? "on" : "off"}, ${fmt(b.blink_interval_s)} s`;
+}
 function renderCalibration(c){
   if(!c)return;
   manualMode.checked=!!c.enabled;
@@ -440,12 +517,15 @@ async function tick(){
     document.getElementById("targetSource").textContent=d.target_source || "-";
     document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
     renderPiTemp(d.pi_temperature_c);
+    renderBlink(d.blink);
     renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
   }catch(e){
     document.getElementById("state").textContent="debug fetch failed";
   }
 }
+idleBlink.addEventListener("change",()=>blink("set",blinkValues()));
+blinkInterval.addEventListener("change",()=>blink("set",blinkValues()));
 manualMode.addEventListener("change",()=>cal("enable",{enabled:manualMode.checked ? "1" : "0"}));
 gazePad.addEventListener("pointerdown",(ev)=>{
   const target=padTarget(ev);
@@ -487,6 +567,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gaze-ms", type=float, default=350.0)
     parser.add_argument("--gaze-sample-ms", type=float, default=50.0)
     parser.add_argument("--gaze-blink-threshold", type=float, default=999.0)
+    parser.add_argument("--idle-blink", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--blink-interval", type=float, default=4.0)
     parser.add_argument("--feedback-silence", type=float, default=0.20)
     parser.add_argument("--done-fallback", type=float, default=0.60)
     parser.add_argument("--eyelid-offset", type=float, default=-2.0)
@@ -665,6 +747,38 @@ def schedule_gaze_if_ready(
     return True
 
 
+def schedule_blink_if_ready(engine: RobotEngine) -> bool:
+    if engine.state != BoardState.IDLE or engine.gaze_events or engine.blink_events:
+        return False
+    if not engine.schedule_blink_at(time.monotonic(), reason="idle", force=True):
+        return False
+    engine.maybe_start_next()
+    return True
+
+
+def apply_blink_settings(
+    engine: RobotEngine,
+    *,
+    enabled: bool,
+    interval_s: float,
+    previous: tuple[bool, float] | None,
+) -> tuple[bool, float]:
+    if previous == (enabled, interval_s):
+        return previous
+
+    old_interval = engine.config.blink_interval_s
+    engine.idle_blink_enabled = False
+    if old_interval != interval_s:
+        engine.config = type(engine.config)(
+            **{**engine.config.__dict__, "blink_interval_s": interval_s}
+        )
+
+    if not enabled:
+        engine.blink_events = [event for event in engine.blink_events if event.reason != "idle"]
+
+    return enabled, interval_s
+
+
 def debug_snapshot(
     *,
     now: float,
@@ -730,6 +844,8 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--gaze-sample-ms must be > 0")
     if args.gaze_blink_threshold < 0:
         raise ValueError("--gaze-blink-threshold must be >= 0")
+    if args.blink_interval <= 0:
+        raise ValueError("--blink-interval must be > 0")
     if args.feedback_silence < 0:
         raise ValueError("--feedback-silence must be >= 0")
     if args.done_fallback < 0:
@@ -746,6 +862,7 @@ def run(args: argparse.Namespace) -> int:
             gaze_sample_ms=args.gaze_sample_ms,
             eyelid_offset=args.eyelid_offset,
             idle_blink=False,
+            blink_interval_s=args.blink_interval,
             gaze_blink_threshold_deg=args.gaze_blink_threshold,
             feedback_silence_s=args.feedback_silence,
             done_fallback_s=args.done_fallback,
@@ -766,12 +883,16 @@ def run(args: argparse.Namespace) -> int:
         camera,
         port=args.mjpeg_port,
         calibration_file=args.calibration_file,
+        idle_blink=args.idle_blink,
+        blink_interval_s=args.blink_interval,
     )
 
     active_id: int | None = None
     last_sent_at = 0.0
     last_target: tuple[float, float] | None = None
     send_interval = 1.0 / args.send_hz
+    applied_blink_settings: tuple[bool, float] | None = None
+    next_auto_blink_at = time.monotonic() + args.blink_interval
 
     engine.open()
     camera.start()
@@ -782,6 +903,19 @@ def run(args: argparse.Namespace) -> int:
             now = time.monotonic()
             engine.read_serial()
             engine.update_board_state()
+            blink_enabled, blink_interval_s = mjpeg_server.blink_state_snapshot()
+            previous_blink_settings = applied_blink_settings
+            applied_blink_settings = apply_blink_settings(
+                engine,
+                enabled=blink_enabled,
+                interval_s=blink_interval_s,
+                previous=applied_blink_settings,
+            )
+            if applied_blink_settings != previous_blink_settings:
+                next_auto_blink_at = now + blink_interval_s
+            if blink_enabled and now >= next_auto_blink_at:
+                if schedule_blink_if_ready(engine):
+                    next_auto_blink_at = now + blink_interval_s
             engine.maybe_start_next()
 
             manual_target = mjpeg_server.pop_pending_manual_gaze()
