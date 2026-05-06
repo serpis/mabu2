@@ -66,6 +66,17 @@ class FaceTrack:
         x, y, w, h = self.smoothed_bbox
         return x + w / 2.0, y + h / 2.0
 
+    @property
+    def eye_center(self) -> tuple[float, float]:
+        if len(self.landmarks) < 2:
+            return self.center
+        right_eye = self.landmarks[0]
+        left_eye = self.landmarks[1]
+        return (
+            (right_eye[0] + left_eye[0]) / 2.0,
+            (right_eye[1] + left_eye[1]) / 2.0,
+        )
+
     def update(self, detection: FaceDetection, seq: int, smoothing: float) -> None:
         old_center = self.center
         sx, sy, sw, sh = self.smoothed_bbox
@@ -470,6 +481,7 @@ def track_to_dict(track: FaceTrack, image_size: tuple[int, int]) -> dict:
     width, height = image_size
     x, y, w, h = track.smoothed_bbox
     cx, cy = track.center
+    ex, ey = track.eye_center
     vx, vy = track.velocity
     return {
         "id": track.track_id,
@@ -479,6 +491,11 @@ def track_to_dict(track: FaceTrack, image_size: tuple[int, int]) -> dict:
         "center_norm": [
             round((cx - width / 2.0) / max(width / 2.0, 1.0), 4),
             round((cy - height / 2.0) / max(height / 2.0, 1.0), 4),
+        ],
+        "eye_center": [round(ex, 2), round(ey, 2)],
+        "eye_center_norm": [
+            round((ex - width / 2.0) / max(width / 2.0, 1.0), 4),
+            round((ey - height / 2.0) / max(height / 2.0, 1.0), 4),
         ],
         "velocity": [round(vx, 2), round(vy, 2)],
         "score": round(track.score, 4),
@@ -510,6 +527,16 @@ def annotate_tracks(frame: np.ndarray, tracks: list[FaceTrack]) -> int:
             continue
         for px, py in track.landmarks:
             cv2.circle(frame, (int(px), int(py)), 2, (0, 0, 255), -1)
+        ex, ey = track.eye_center
+        cv2.drawMarker(
+            frame,
+            (int(ex), int(ey)),
+            (255, 0, 255),
+            cv2.MARKER_CROSS,
+            10,
+            1,
+            cv2.LINE_AA,
+        )
     return visible_count
 
 

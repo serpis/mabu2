@@ -252,8 +252,10 @@ class SharedCameraMjpegServer:
             "timestamp": time.time(),
             "frame_seq": snapshot.get("frame_seq"),
             "face_id": face.get("id"),
-            "center": face.get("center"),
-            "center_norm": face.get("center_norm"),
+            "eye_center": face.get("eye_center") or face.get("center"),
+            "eye_center_norm": face.get("eye_center_norm") or face.get("center_norm"),
+            "face_center": face.get("center"),
+            "face_center_norm": face.get("center_norm"),
             "bbox": face.get("bbox"),
             "yaw": yaw,
             "pitch": pitch,
@@ -468,7 +470,7 @@ def face_to_gaze(
     max_yaw: float,
     max_pitch: float,
 ) -> tuple[float, float]:
-    cx, cy = face.center
+    cx, cy = face.eye_center
     norm_x = (cx - frame.width / 2.0) / max(frame.width / 2.0, 1.0)
     norm_y = (cy - frame.height / 2.0) / max(frame.height / 2.0, 1.0)
     yaw = norm_x * horizontal_fov * 0.5 * yaw_scale
