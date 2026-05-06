@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Low-latency face-following loop using camera tracking and direct gaze poses."""
+"""Face-following loop using camera tracking and the animation-engine gaze path."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from camera.face_detect import BOUNDARY, FaceTrack, RpicamFaceTracker, TrackedFaceFrame
-from robot_engine import RobotEngine, default_engine_config
+from robot_engine import BoardState, PendingGaze, RobotEngine, default_engine_config
 
 
 class SharedCameraMjpegServer:
@@ -465,7 +465,7 @@ tick();
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Track one face and drive gaze with direct pose commands."
+        description="Track one face and drive gaze through the animation engine."
     )
     parser.add_argument("--port", default="/dev/ttyAMA0")
     parser.add_argument("--baudrate", type=int, default=57_600)
@@ -484,6 +484,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pitch", type=float, default=30.0)
     parser.add_argument("--send-hz", type=float, default=15.0)
     parser.add_argument("--min-angle-delta", type=float, default=1.0)
+    parser.add_argument("--gaze-ms", type=float, default=350.0)
+    parser.add_argument("--gaze-sample-ms", type=float, default=50.0)
+    parser.add_argument("--gaze-blink-threshold", type=float, default=999.0)
+    parser.add_argument("--feedback-silence", type=float, default=0.20)
+    parser.add_argument("--done-fallback", type=float, default=0.60)
     parser.add_argument("--eyelid-offset", type=float, default=-2.0)
     parser.add_argument("--loop-sleep", type=float, default=0.003)
     parser.add_argument("--mjpeg-port", type=int, default=8080)
@@ -646,10 +651,25 @@ def should_send(
     return math.hypot(yaw - last_yaw, pitch - last_pitch) >= min_angle_delta
 
 
+def schedule_gaze_if_ready(
+    engine: RobotEngine,
+    target: tuple[float, float],
+    *,
+    dwell_ms: float,
+) -> bool:
+    if engine.state != BoardState.IDLE or engine.gaze_events:
+        return False
+    yaw, pitch = target
+    engine.schedule_gaze(PendingGaze(yaw=yaw, pitch=pitch, dwell_ms=dwell_ms))
+    engine.maybe_start_next()
+    return True
+
+
 def debug_snapshot(
     *,
     now: float,
     frame: TrackedFaceFrame,
+    engine: RobotEngine,
     active_id: int | None,
     face: FaceTrack | None,
     target: tuple[float, float] | None,
@@ -684,6 +704,11 @@ def debug_snapshot(
         "selected_id": selected_id,
         "target": target_dict,
         "target_source": target_source,
+        "gaze_mode": "animation_engine",
+        "engine_state": engine.state.value,
+        "engine_timeline_gazes": len(engine.gaze_events),
+        "engine_timeline_blinks": len(engine.blink_events),
+        "engine_timeline_stretches": len(engine.neck_stretch_events),
         "sent": sent,
         "last_sent_age_ms": (
             round((now - last_sent_at) * 1000.0, 2)
@@ -699,6 +724,16 @@ def debug_snapshot(
 def run(args: argparse.Namespace) -> int:
     if args.send_hz <= 0:
         raise ValueError("--send-hz must be > 0")
+    if args.gaze_ms <= 0:
+        raise ValueError("--gaze-ms must be > 0")
+    if args.gaze_sample_ms <= 0:
+        raise ValueError("--gaze-sample-ms must be > 0")
+    if args.gaze_blink_threshold < 0:
+        raise ValueError("--gaze-blink-threshold must be >= 0")
+    if args.feedback_silence < 0:
+        raise ValueError("--feedback-silence must be >= 0")
+    if args.done_fallback < 0:
+        raise ValueError("--done-fallback must be >= 0")
     if args.loop_sleep < 0:
         raise ValueError("--loop-sleep must be >= 0")
     if args.mjpeg_port < 0:
@@ -708,8 +743,12 @@ def run(args: argparse.Namespace) -> int:
         default_engine_config(
             port=args.port,
             baudrate=args.baudrate,
+            gaze_sample_ms=args.gaze_sample_ms,
             eyelid_offset=args.eyelid_offset,
             idle_blink=False,
+            gaze_blink_threshold_deg=args.gaze_blink_threshold,
+            feedback_silence_s=args.feedback_silence,
+            done_fallback_s=args.done_fallback,
             verbose=args.verbose,
         )
     )
@@ -742,12 +781,14 @@ def run(args: argparse.Namespace) -> int:
         while True:
             now = time.monotonic()
             engine.read_serial()
+            engine.update_board_state()
+            engine.maybe_start_next()
 
             manual_target = mjpeg_server.pop_pending_manual_gaze()
             if manual_target is not None:
-                engine.send_direct_gaze(*manual_target)
-                last_sent_at = now
-                last_target = manual_target
+                if schedule_gaze_if_ready(engine, manual_target, dwell_ms=args.gaze_ms):
+                    last_sent_at = now
+                    last_target = manual_target
 
             if camera.has_frame():
                 frame = camera.get_latest()
@@ -789,8 +830,7 @@ def run(args: argparse.Namespace) -> int:
                         last_sent_at,
                         send_interval=send_interval,
                         min_angle_delta=args.min_angle_delta,
-                    ):
-                        engine.send_direct_gaze(*target)
+                    ) and schedule_gaze_if_ready(engine, target, dwell_ms=args.gaze_ms):
                         last_sent_at = now
                         last_target = target
                         sent = True
@@ -805,6 +845,7 @@ def run(args: argparse.Namespace) -> int:
                     debug_snapshot(
                         now=now,
                         frame=frame,
+                        engine=engine,
                         active_id=active_id,
                         face=face,
                         target=target,
