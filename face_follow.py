@@ -28,6 +28,7 @@ class SharedCameraMjpegServer:
         *,
         port: int,
         calibration_file: str,
+        settings_file: str,
         idle_blink: bool,
         blink_interval_s: float,
         gaze_mode: str,
@@ -36,6 +37,7 @@ class SharedCameraMjpegServer:
         self.camera = camera
         self.port = port
         self.calibration_file = Path(calibration_file)
+        self.settings_file = Path(settings_file)
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.socket: socket.socket | None = None
@@ -61,6 +63,7 @@ class SharedCameraMjpegServer:
         self.gaze_mode = gaze_mode
         self.expression_lock = threading.Lock()
         self.eyelid_offset = eyelid_offset
+        self._save_runtime_settings()
 
     def set_debug(self, snapshot: dict) -> None:
         with self.debug_lock:
@@ -135,6 +138,7 @@ class SharedCameraMjpegServer:
                         "blink": self._blink_state(),
                         "gaze": self._gaze_state(),
                         "expression": self._expression_state(),
+                        "settings": self._settings_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
                         "served_at": time.time(),
                     },
@@ -264,6 +268,35 @@ class SharedCameraMjpegServer:
         with self.expression_lock:
             return {"eyelid_offset": self.eyelid_offset}
 
+    def _settings_values(self) -> dict:
+        with self.gaze_lock:
+            gaze_mode = self.gaze_mode
+        with self.blink_lock:
+            idle_blink_enabled = self.idle_blink_enabled
+            blink_interval_s = self.blink_interval_s
+        with self.expression_lock:
+            eyelid_offset = self.eyelid_offset
+        return {
+            "gaze_mode": gaze_mode,
+            "idle_blink_enabled": idle_blink_enabled,
+            "blink_interval_s": blink_interval_s,
+            "eyelid_offset": eyelid_offset,
+        }
+
+    def _settings_state(self) -> dict:
+        return {
+            "file": str(self.settings_file),
+            **self._settings_values(),
+        }
+
+    def _save_runtime_settings(self) -> None:
+        self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "updated_at": time.time(),
+            **self._settings_values(),
+        }
+        self.settings_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
     def _handle_expression_request(self, path: str) -> dict:
         parsed = urlsplit(path)
         params = parse_qs(parsed.query)
@@ -280,6 +313,7 @@ class SharedCameraMjpegServer:
                 raise ValueError("eyelid_offset must be between -30 and 30")
             with self.expression_lock:
                 self.eyelid_offset = eyelid_offset
+            self._save_runtime_settings()
             return self._expression_state()
 
         return {"error": f"unknown expression action: {action}", **self._expression_state()}
@@ -310,6 +344,7 @@ class SharedCameraMjpegServer:
                 raise ValueError(f"gaze mode must be one of: {', '.join(sorted(GAZE_MODES))}")
             with self.gaze_lock:
                 self.gaze_mode = mode
+            self._save_runtime_settings()
             return self._gaze_state()
 
         return {"error": f"unknown gaze action: {action}", **self._gaze_state()}
@@ -340,6 +375,7 @@ class SharedCameraMjpegServer:
                     if blink_interval_s <= 0:
                         raise ValueError("blink interval must be > 0")
                     self.blink_interval_s = blink_interval_s
+            self._save_runtime_settings()
             return self._blink_state()
 
         return {"error": f"unknown blink action: {action}", **self._blink_state()}
@@ -717,8 +753,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mjpeg-port", type=int, default=8080)
     parser.add_argument("--debug-jpeg-quality", type=int, default=80)
     parser.add_argument("--calibration-file", default="face_follow_calibration.json")
+    parser.add_argument("--settings-file", default="face_follow_settings.json")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
+
+
+def load_runtime_settings(settings_file: str) -> dict:
+    path = Path(settings_file)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not load settings file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"settings file {path} must contain a JSON object")
+    return data
+
+
+def apply_runtime_settings(args: argparse.Namespace) -> None:
+    settings = load_runtime_settings(args.settings_file)
+    if not settings:
+        return
+
+    gaze_mode = settings.get("gaze_mode")
+    if gaze_mode is not None:
+        if gaze_mode not in GAZE_MODES:
+            raise ValueError(f"settings gaze_mode must be one of: {', '.join(sorted(GAZE_MODES))}")
+        args.gaze_mode = gaze_mode
+
+    idle_blink_enabled = settings.get("idle_blink_enabled")
+    if idle_blink_enabled is not None:
+        if not isinstance(idle_blink_enabled, bool):
+            raise ValueError("settings idle_blink_enabled must be a boolean")
+        args.idle_blink = idle_blink_enabled
+
+    blink_interval_s = settings.get("blink_interval_s")
+    if blink_interval_s is not None:
+        args.blink_interval = float(blink_interval_s)
+
+    eyelid_offset = settings.get("eyelid_offset")
+    if eyelid_offset is not None:
+        args.eyelid_offset = float(eyelid_offset)
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -1006,6 +1082,8 @@ def debug_snapshot(
 
 
 def run(args: argparse.Namespace) -> int:
+    apply_runtime_settings(args)
+
     if args.send_hz <= 0:
         raise ValueError("--send-hz must be > 0")
     if args.gaze_ms <= 0:
@@ -1016,6 +1094,8 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--gaze-blink-threshold must be >= 0")
     if args.blink_interval <= 0:
         raise ValueError("--blink-interval must be > 0")
+    if not -30.0 <= args.eyelid_offset <= 30.0:
+        raise ValueError("--eyelid-offset must be between -30 and 30")
     if args.feedback_silence < 0:
         raise ValueError("--feedback-silence must be >= 0")
     if args.done_fallback < 0:
@@ -1053,6 +1133,7 @@ def run(args: argparse.Namespace) -> int:
         camera,
         port=args.mjpeg_port,
         calibration_file=args.calibration_file,
+        settings_file=args.settings_file,
         idle_blink=args.idle_blink,
         blink_interval_s=args.blink_interval,
         gaze_mode=args.gaze_mode,
