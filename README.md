@@ -118,3 +118,11 @@ Om du vill ha grupperade sekvenser ovanpå byte-listorna kan du lägga till `--g
 - Kontrollera jord mellan logikanalysatorn och målsystemet.
 - Kontrollera att din FX2LA verkligen tål den logiknivå du mäter på.
 - Spara gärna `.sr`-filen även om du främst jobbar i JSON. Då kan du senare dekoda om samma capture med annan baudrate, invertering eller annan protokolltolkning.
+
+## Robot- och PID-verktyg
+
+Robotens UART-protokoll och rörelseverktyg dokumenteras i `ROBOT_MOTION.md`,
+`ROBOT_ANIMATION.md` och `ROBOT_ENGINE.md`.
+
+Eye-servo-benchmark och senaste `eye_updown` PID-tuning finns i
+`EYE_PID_TUNING.md`.
