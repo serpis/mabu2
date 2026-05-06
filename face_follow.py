@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Face-following loop using camera tracking and the animation-engine gaze path."""
+"""Face-following loop using camera tracking with selectable gaze output."""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +16,11 @@ from camera.face_detect import BOUNDARY, FaceTrack, RpicamFaceTracker, TrackedFa
 from robot_engine import BoardState, PendingGaze, RobotEngine, default_engine_config
 
 
+GAZE_MODE_ANIMATION = "animation_engine"
+GAZE_MODE_DIRECT = "direct_pose"
+GAZE_MODES = {GAZE_MODE_ANIMATION, GAZE_MODE_DIRECT}
+
+
 class SharedCameraMjpegServer:
     def __init__(
         self,
@@ -25,6 +30,7 @@ class SharedCameraMjpegServer:
         calibration_file: str,
         idle_blink: bool,
         blink_interval_s: float,
+        gaze_mode: str,
     ) -> None:
         self.camera = camera
         self.port = port
@@ -50,6 +56,8 @@ class SharedCameraMjpegServer:
         self.blink_lock = threading.Lock()
         self.idle_blink_enabled = idle_blink
         self.blink_interval_s = blink_interval_s
+        self.gaze_lock = threading.Lock()
+        self.gaze_mode = gaze_mode
 
     def set_debug(self, snapshot: dict) -> None:
         with self.debug_lock:
@@ -122,6 +130,7 @@ class SharedCameraMjpegServer:
                         **self.debug_snapshot,
                         "calibration": calibration,
                         "blink": self._blink_state(),
+                        "gaze": self._gaze_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
                         "served_at": time.time(),
                     },
@@ -142,6 +151,14 @@ class SharedCameraMjpegServer:
                 body = self._handle_calibration_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._calibration_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/gaze"):
+            try:
+                body = self._handle_gaze_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._gaze_state()}
             self._send_json(conn, body)
             return
 
@@ -222,6 +239,40 @@ class SharedCameraMjpegServer:
     def blink_state_snapshot(self) -> tuple[bool, float]:
         with self.blink_lock:
             return self.idle_blink_enabled, self.blink_interval_s
+
+    def gaze_mode_snapshot(self) -> str:
+        with self.gaze_lock:
+            return self.gaze_mode
+
+    def _gaze_state(self) -> dict:
+        with self.gaze_lock:
+            return {"mode": self.gaze_mode}
+
+    def _handle_gaze_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._gaze_state()
+
+        if action == "set":
+            mode = params.get("mode", [None])[0]
+            if mode is None:
+                use_animation = params.get("animation", [None])[0]
+                if use_animation is not None:
+                    mode = (
+                        GAZE_MODE_ANIMATION
+                        if use_animation not in {"0", "false", "off", "no"}
+                        else GAZE_MODE_DIRECT
+                    )
+            if mode not in GAZE_MODES:
+                raise ValueError(f"gaze mode must be one of: {', '.join(sorted(GAZE_MODES))}")
+            with self.gaze_lock:
+                self.gaze_mode = mode
+            return self._gaze_state()
+
+        return {"error": f"unknown gaze action: {action}", **self._gaze_state()}
 
     def _blink_state(self) -> dict:
         with self.blink_lock:
@@ -400,6 +451,11 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">target source</div><div class="v" id="targetSource">-</div></div>
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
     <div class="panel">
+      <h1>Gaze Output</h1>
+      <label><input id="animationGaze" type="checkbox" checked> Animation engine</label>
+      <div class="row"><div class="k">mode</div><div class="v" id="gazeMode">-</div></div>
+    </div>
+    <div class="panel">
       <h1>Blink</h1>
       <label><input id="idleBlink" type="checkbox"> Idle blink</label>
       <div class="row"><div class="k">interval s</div><div class="v"><input id="blinkInterval" type="number" min="0.5" step="0.5" value="4.0"></div></div>
@@ -440,6 +496,7 @@ function renderPiTemp(value){
   else if(value >= 65) status.classList.add("warm");
 }
 const manualMode=document.getElementById("manualMode");
+const animationGaze=document.getElementById("animationGaze");
 const idleBlink=document.getElementById("idleBlink");
 const blinkInterval=document.getElementById("blinkInterval");
 const gazePad=document.getElementById("gazePad");
@@ -480,6 +537,18 @@ async function blink(action, extra={}){
   renderBlink(d);
   return d;
 }
+async function gaze(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/gaze?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderGaze(d);
+  return d;
+}
+function renderGaze(g){
+  if(!g)return;
+  animationGaze.checked=g.mode !== "direct_pose";
+  document.getElementById("gazeMode").textContent=g.mode || "-";
+}
 function blinkValues(){
   return {
     enabled: idleBlink.checked ? "1" : "0",
@@ -517,6 +586,7 @@ async function tick(){
     document.getElementById("targetSource").textContent=d.target_source || "-";
     document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
     renderPiTemp(d.pi_temperature_c);
+    renderGaze(d.gaze);
     renderBlink(d.blink);
     renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
@@ -524,6 +594,7 @@ async function tick(){
     document.getElementById("state").textContent="debug fetch failed";
   }
 }
+animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.checked ? "animation_engine" : "direct_pose"}));
 idleBlink.addEventListener("change",()=>blink("set",blinkValues()));
 blinkInterval.addEventListener("change",()=>blink("set",blinkValues()));
 manualMode.addEventListener("change",()=>cal("enable",{enabled:manualMode.checked ? "1" : "0"}));
@@ -564,6 +635,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pitch", type=float, default=30.0)
     parser.add_argument("--send-hz", type=float, default=15.0)
     parser.add_argument("--min-angle-delta", type=float, default=1.0)
+    parser.add_argument(
+        "--gaze-mode",
+        choices=sorted(GAZE_MODES),
+        default=GAZE_MODE_ANIMATION,
+    )
     parser.add_argument("--gaze-ms", type=float, default=350.0)
     parser.add_argument("--gaze-sample-ms", type=float, default=50.0)
     parser.add_argument("--gaze-blink-threshold", type=float, default=999.0)
@@ -747,6 +823,25 @@ def schedule_gaze_if_ready(
     return True
 
 
+def send_direct_gaze_if_ready(engine: RobotEngine, target: tuple[float, float]) -> bool:
+    if engine.state != BoardState.IDLE:
+        return False
+    engine.send_direct_gaze(*target)
+    return True
+
+
+def drive_gaze_if_ready(
+    engine: RobotEngine,
+    target: tuple[float, float],
+    *,
+    dwell_ms: float,
+    gaze_mode: str,
+) -> bool:
+    if gaze_mode == GAZE_MODE_DIRECT:
+        return send_direct_gaze_if_ready(engine, target)
+    return schedule_gaze_if_ready(engine, target, dwell_ms=dwell_ms)
+
+
 def schedule_blink_if_ready(engine: RobotEngine) -> bool:
     if engine.state != BoardState.IDLE or engine.gaze_events or engine.blink_events:
         return False
@@ -788,6 +883,7 @@ def debug_snapshot(
     face: FaceTrack | None,
     target: tuple[float, float] | None,
     target_source: str,
+    gaze_mode: str,
     sent: bool,
     last_sent_at: float,
     send_hz: float,
@@ -818,7 +914,7 @@ def debug_snapshot(
         "selected_id": selected_id,
         "target": target_dict,
         "target_source": target_source,
-        "gaze_mode": "animation_engine",
+        "gaze_mode": gaze_mode,
         "engine_state": engine.state.value,
         "engine_timeline_gazes": len(engine.gaze_events),
         "engine_timeline_blinks": len(engine.blink_events),
@@ -885,6 +981,7 @@ def run(args: argparse.Namespace) -> int:
         calibration_file=args.calibration_file,
         idle_blink=args.idle_blink,
         blink_interval_s=args.blink_interval,
+        gaze_mode=args.gaze_mode,
     )
 
     active_id: int | None = None
@@ -917,10 +1014,16 @@ def run(args: argparse.Namespace) -> int:
                 if schedule_blink_if_ready(engine):
                     next_auto_blink_at = now + blink_interval_s
             engine.maybe_start_next()
+            gaze_mode = mjpeg_server.gaze_mode_snapshot()
 
             manual_target = mjpeg_server.pop_pending_manual_gaze()
             if manual_target is not None:
-                if schedule_gaze_if_ready(engine, manual_target, dwell_ms=args.gaze_ms):
+                if drive_gaze_if_ready(
+                    engine,
+                    manual_target,
+                    dwell_ms=args.gaze_ms,
+                    gaze_mode=gaze_mode,
+                ):
                     last_sent_at = now
                     last_target = manual_target
 
@@ -964,7 +1067,12 @@ def run(args: argparse.Namespace) -> int:
                         last_sent_at,
                         send_interval=send_interval,
                         min_angle_delta=args.min_angle_delta,
-                    ) and schedule_gaze_if_ready(engine, target, dwell_ms=args.gaze_ms):
+                    ) and drive_gaze_if_ready(
+                        engine,
+                        target,
+                        dwell_ms=args.gaze_ms,
+                        gaze_mode=gaze_mode,
+                    ):
                         last_sent_at = now
                         last_target = target
                         sent = True
@@ -984,6 +1092,7 @@ def run(args: argparse.Namespace) -> int:
                         face=face,
                         target=target,
                         target_source=target_source,
+                        gaze_mode=gaze_mode,
                         sent=sent,
                         last_sent_at=last_sent_at,
                         send_hz=args.send_hz,
