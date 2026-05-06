@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import socket
 import threading
@@ -19,6 +20,19 @@ class SharedCameraMjpegServer:
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.socket: socket.socket | None = None
+        self.debug_lock = threading.Lock()
+        self.debug_snapshot: dict = {
+            "state": "starting",
+            "active_id": None,
+            "selected_id": None,
+            "target": None,
+            "sent": False,
+            "faces": [],
+        }
+
+    def set_debug(self, snapshot: dict) -> None:
+        with self.debug_lock:
+            self.debug_snapshot = snapshot
 
     def start(self) -> None:
         if self.port <= 0 or self.thread is not None:
@@ -60,12 +74,26 @@ class SharedCameraMjpegServer:
             return
 
         if req.startswith(b"GET / "):
-            html = (b"<html><body style='margin:0;background:#000'>"
-                    b"<img src='/stream' style='width:100vw;height:100vh;object-fit:contain'/>"
-                    b"</body></html>")
+            html = self._index_html()
             conn.sendall(
                 b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n"
                 b"Content-Length: " + str(len(html)).encode() + b"\r\n\r\n" + html
+            )
+            conn.close()
+            return
+
+        if req.startswith(b"GET /debug"):
+            with self.debug_lock:
+                body = json.dumps(
+                    {**self.debug_snapshot, "served_at": time.time()},
+                    indent=2,
+                    sort_keys=True,
+                ).encode()
+            conn.sendall(
+                b"HTTP/1.0 200 OK\r\n"
+                b"Cache-Control: no-cache\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
             )
             conn.close()
             return
@@ -104,6 +132,65 @@ class SharedCameraMjpegServer:
             pass
         finally:
             conn.close()
+
+    def _index_html(self) -> bytes:
+        return b"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Face Follow Debug</title>
+<style>
+html,body{margin:0;height:100%;background:#111;color:#e8e8e8;font:14px system-ui,sans-serif}
+main{height:100%;display:grid;grid-template-columns:minmax(0,1fr) 380px}
+.video{min-width:0;background:#000;display:grid;place-items:center}
+img{width:100%;height:100%;object-fit:contain}
+aside{border-left:1px solid #333;background:#181818;overflow:auto}
+h1{font-size:16px;margin:12px 14px}
+.row{display:grid;grid-template-columns:120px 1fr;gap:8px;padding:4px 14px;border-top:1px solid #252525}
+.k{color:#9ca3af}
+.v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;white-space:pre-wrap}
+@media(max-width:900px){main{grid-template-columns:1fr;grid-template-rows:60vh auto}aside{border-left:0;border-top:1px solid #333}}
+</style>
+</head>
+<body>
+<main>
+  <section class="video"><img src="/stream" alt="Annotated camera stream"></section>
+  <aside>
+    <h1>Face Follow Debug</h1>
+    <div class="row"><div class="k">state</div><div class="v" id="state">-</div></div>
+    <div class="row"><div class="k">frame</div><div class="v" id="frame">-</div></div>
+    <div class="row"><div class="k">age ms</div><div class="v" id="age">-</div></div>
+    <div class="row"><div class="k">active</div><div class="v" id="active">-</div></div>
+    <div class="row"><div class="k">target</div><div class="v" id="target">-</div></div>
+    <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
+    <pre id="raw">{}</pre>
+  </aside>
+</main>
+<script>
+function fmt(n,d=1){return Number.isFinite(n)?n.toFixed(d):"-";}
+async function tick(){
+  try{
+    const r=await fetch("/debug",{cache:"no-store"});
+    const d=await r.json();
+    document.getElementById("state").textContent=d.state || "-";
+    document.getElementById("frame").textContent=`seq=${d.frame_seq ?? "-"} faces=${d.visible_faces ?? 0}/${d.detections ?? 0}`;
+    document.getElementById("age").textContent=fmt(d.frame_age_ms);
+    document.getElementById("active").textContent=`active=${d.active_id ?? "-"} selected=${d.selected_id ?? "-"}`;
+    document.getElementById("target").textContent=d.target ? `yaw=${fmt(d.target.yaw)} pitch=${fmt(d.target.pitch)}` : "-";
+    document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
+    document.getElementById("raw").textContent=JSON.stringify(d,null,2);
+  }catch(e){
+    document.getElementById("state").textContent="debug fetch failed";
+  }
+}
+setInterval(tick,250);
+tick();
+</script>
+</body>
+</html>
+"""
 
 
 def parse_args() -> argparse.Namespace:
@@ -199,6 +286,49 @@ def should_send(
     return math.hypot(yaw - last_yaw, pitch - last_pitch) >= min_angle_delta
 
 
+def debug_snapshot(
+    *,
+    now: float,
+    frame: TrackedFaceFrame,
+    active_id: int | None,
+    face: FaceTrack | None,
+    target: tuple[float, float] | None,
+    sent: bool,
+    last_sent_at: float,
+    send_hz: float,
+    min_angle_delta: float,
+) -> dict:
+    selected_id = face.track_id if face is not None else None
+    target_dict = None
+    if target is not None:
+        yaw, pitch = target
+        target_dict = {"yaw": round(yaw, 3), "pitch": round(pitch, 3)}
+    frame_dict = frame.as_dict()
+    return {
+        "state": "tracking" if face is not None else "no_visible_face",
+        "frame_seq": frame.seq,
+        "frame_timestamp": frame.timestamp,
+        "frame_monotonic_timestamp": frame.monotonic_timestamp,
+        "frame_age_ms": round((now - frame.monotonic_timestamp) * 1000.0, 2),
+        "width": frame.width,
+        "height": frame.height,
+        "detections": frame.detections,
+        "visible_faces": len(frame.visible_tracks),
+        "active_id": active_id,
+        "selected_id": selected_id,
+        "target": target_dict,
+        "sent": sent,
+        "last_sent_age_ms": (
+            round((now - last_sent_at) * 1000.0, 2)
+            if last_sent_at > 0
+            else None
+        ),
+        "send_hz": send_hz,
+        "min_angle_delta": min_angle_delta,
+        "faces": frame_dict["faces"],
+    }
+
+
 def run(args: argparse.Namespace) -> int:
     if args.send_hz <= 0:
         raise ValueError("--send-hz must be > 0")
@@ -247,6 +377,8 @@ def run(args: argparse.Namespace) -> int:
                 if frame is None:
                     continue
                 face = choose_face(frame, active_id)
+                target = None
+                sent = False
                 if face is None:
                     active_id = None
                 else:
@@ -272,6 +404,7 @@ def run(args: argparse.Namespace) -> int:
                         engine.send_direct_gaze(*target)
                         last_sent_at = now
                         last_target = target
+                        sent = True
                         if args.verbose:
                             yaw, pitch = target
                             print(
@@ -279,6 +412,19 @@ def run(args: argparse.Namespace) -> int:
                                 f"seq={frame.seq}",
                                 flush=True,
                             )
+                mjpeg_server.set_debug(
+                    debug_snapshot(
+                        now=now,
+                        frame=frame,
+                        active_id=active_id,
+                        face=face,
+                        target=target,
+                        sent=sent,
+                        last_sent_at=last_sent_at,
+                        send_hz=args.send_hz,
+                        min_angle_delta=args.min_angle_delta,
+                    )
+                )
 
             time.sleep(args.loop_sleep)
     except KeyboardInterrupt:
