@@ -328,9 +328,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
     <div class="panel">
       <h1>Calibration</h1>
-      <div class="controls">
-        <button id="calOn">Manual on</button><button class="secondary" id="calOff">Manual off</button>
-      </div>
+      <label><input id="manualMode" type="checkbox"> Direct from sliders</label>
       <label>Yaw <span class="v" id="yawValue">0.0</span><input id="yaw" type="range" min="-40" max="40" step="0.5" value="0"></label>
       <label>Pitch <span class="v" id="pitchValue">0.0</span><input id="pitch" type="range" min="-20" max="20" step="0.5" value="0"></label>
       <div class="controls">
@@ -347,6 +345,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
 function fmt(n,d=1){return Number.isFinite(n)?n.toFixed(d):"-";}
 const yaw=document.getElementById("yaw");
 const pitch=document.getElementById("pitch");
+const manualMode=document.getElementById("manualMode");
 function sliderValues(){return {yaw: Number(yaw.value), pitch: Number(pitch.value)};}
 function updateSliderLabels(){
   document.getElementById("yawValue").textContent=fmt(Number(yaw.value));
@@ -361,6 +360,7 @@ async function cal(action, extra={}){
 }
 function renderCalibration(c){
   if(!c)return;
+  manualMode.checked=!!c.enabled;
   if(document.activeElement!==yaw && Number.isFinite(c.manual_yaw)) yaw.value=c.manual_yaw;
   if(document.activeElement!==pitch && Number.isFinite(c.manual_pitch)) pitch.value=c.manual_pitch;
   updateSliderLabels();
@@ -389,8 +389,7 @@ pitch.addEventListener("input",updateSliderLabels);
 function setManual(){cal("set",sliderValues()).catch(()=>{});}
 yaw.addEventListener("change",setManual);
 pitch.addEventListener("change",setManual);
-document.getElementById("calOn").addEventListener("click",()=>cal("enable",{enabled:"1"}));
-document.getElementById("calOff").addEventListener("click",()=>cal("enable",{enabled:"0"}));
+manualMode.addEventListener("change",()=>cal("enable",{enabled:manualMode.checked ? "1" : "0"}));
 document.getElementById("apply").addEventListener("click",()=>cal("set",{...sliderValues(),apply:"1"}));
 document.getElementById("record").addEventListener("click",()=>cal("record",sliderValues()));
 setInterval(tick,250);
