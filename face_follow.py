@@ -341,8 +341,8 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
       <h1>Calibration</h1>
       <label><input id="manualMode" type="checkbox"> Direct from gaze pad</label>
       <div class="gaze-pad" id="gazePad">
-        <div class="gaze-axis left">left</div><div class="gaze-axis right">right</div>
-        <div class="gaze-axis up">up</div><div class="gaze-axis down">down</div>
+        <div class="gaze-axis left">yaw -60</div><div class="gaze-axis right">yaw +60</div>
+        <div class="gaze-axis up">pitch +30</div><div class="gaze-axis down">pitch -30</div>
         <div class="gaze-marker" id="gazeMarker"></div>
       </div>
       <div class="row"><div class="k">manual yaw</div><div class="v" id="yawValue">0.0</div></div>
@@ -364,7 +364,7 @@ const gazePad=document.getElementById("gazePad");
 const gazeMarker=document.getElementById("gazeMarker");
 let manualYaw=0;
 let manualPitch=0;
-const yawMin=-40, yawMax=40, pitchMin=-20, pitchMax=20;
+const yawMin=-60, yawMax=60, pitchMin=-30, pitchMax=30;
 function manualValues(){return {yaw: manualYaw, pitch: manualPitch};}
 function updateManual(yaw,pitch){
   manualYaw=Math.max(yawMin,Math.min(yawMax,yaw));
