@@ -31,6 +31,7 @@ class SharedCameraMjpegServer:
         idle_blink: bool,
         blink_interval_s: float,
         gaze_mode: str,
+        eyelid_offset: float,
     ) -> None:
         self.camera = camera
         self.port = port
@@ -58,6 +59,8 @@ class SharedCameraMjpegServer:
         self.blink_interval_s = blink_interval_s
         self.gaze_lock = threading.Lock()
         self.gaze_mode = gaze_mode
+        self.expression_lock = threading.Lock()
+        self.eyelid_offset = eyelid_offset
 
     def set_debug(self, snapshot: dict) -> None:
         with self.debug_lock:
@@ -131,6 +134,7 @@ class SharedCameraMjpegServer:
                         "calibration": calibration,
                         "blink": self._blink_state(),
                         "gaze": self._gaze_state(),
+                        "expression": self._expression_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
                         "served_at": time.time(),
                     },
@@ -159,6 +163,14 @@ class SharedCameraMjpegServer:
                 body = self._handle_gaze_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._gaze_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/expression"):
+            try:
+                body = self._handle_expression_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._expression_state()}
             self._send_json(conn, body)
             return
 
@@ -243,6 +255,34 @@ class SharedCameraMjpegServer:
     def gaze_mode_snapshot(self) -> str:
         with self.gaze_lock:
             return self.gaze_mode
+
+    def expression_state_snapshot(self) -> float:
+        with self.expression_lock:
+            return self.eyelid_offset
+
+    def _expression_state(self) -> dict:
+        with self.expression_lock:
+            return {"eyelid_offset": self.eyelid_offset}
+
+    def _handle_expression_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._expression_state()
+
+        if action == "set":
+            if "eyelid_offset" not in params:
+                raise ValueError("missing eyelid_offset")
+            eyelid_offset = float(params["eyelid_offset"][0])
+            if not -30.0 <= eyelid_offset <= 30.0:
+                raise ValueError("eyelid_offset must be between -30 and 30")
+            with self.expression_lock:
+                self.eyelid_offset = eyelid_offset
+            return self._expression_state()
+
+        return {"error": f"unknown expression action: {action}", **self._expression_state()}
 
     def _gaze_state(self) -> dict:
         with self.gaze_lock:
@@ -456,6 +496,11 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
       <div class="row"><div class="k">mode</div><div class="v" id="gazeMode">-</div></div>
     </div>
     <div class="panel">
+      <h1>Expression</h1>
+      <div class="row"><div class="k">brow height</div><div class="v"><input id="eyelidOffset" type="number" min="-30" max="30" step="0.5" value="-2.0"></div></div>
+      <div class="row"><div class="k">state</div><div class="v" id="expressionState">-</div></div>
+    </div>
+    <div class="panel">
       <h1>Blink</h1>
       <label><input id="idleBlink" type="checkbox"> Idle blink</label>
       <div class="row"><div class="k">interval s</div><div class="v"><input id="blinkInterval" type="number" min="0.5" step="0.5" value="4.0"></div></div>
@@ -497,6 +542,7 @@ function renderPiTemp(value){
 }
 const manualMode=document.getElementById("manualMode");
 const animationGaze=document.getElementById("animationGaze");
+const eyelidOffset=document.getElementById("eyelidOffset");
 const idleBlink=document.getElementById("idleBlink");
 const blinkInterval=document.getElementById("blinkInterval");
 const gazePad=document.getElementById("gazePad");
@@ -549,6 +595,23 @@ function renderGaze(g){
   animationGaze.checked=g.mode !== "direct_pose";
   document.getElementById("gazeMode").textContent=g.mode || "-";
 }
+async function expression(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/expression?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderExpression(d);
+  return d;
+}
+function expressionValues(){
+  return {eyelid_offset: eyelidOffset.value || "-2.0"};
+}
+function renderExpression(e){
+  if(!e)return;
+  if(Number.isFinite(e.eyelid_offset) && document.activeElement !== eyelidOffset){
+    eyelidOffset.value=fmt(e.eyelid_offset);
+  }
+  document.getElementById("expressionState").textContent=`offset ${fmt(e.eyelid_offset)}`;
+}
 function blinkValues(){
   return {
     enabled: idleBlink.checked ? "1" : "0",
@@ -587,6 +650,7 @@ async function tick(){
     document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
     renderPiTemp(d.pi_temperature_c);
     renderGaze(d.gaze);
+    renderExpression(d.expression);
     renderBlink(d.blink);
     renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
@@ -595,6 +659,7 @@ async function tick(){
   }
 }
 animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.checked ? "animation_engine" : "direct_pose"}));
+eyelidOffset.addEventListener("change",()=>expression("set",expressionValues()));
 idleBlink.addEventListener("change",()=>blink("set",blinkValues()));
 blinkInterval.addEventListener("change",()=>blink("set",blinkValues()));
 manualMode.addEventListener("change",()=>cal("enable",{enabled:manualMode.checked ? "1" : "0"}));
@@ -874,6 +939,15 @@ def apply_blink_settings(
     return enabled, interval_s
 
 
+def apply_eyelid_offset(engine: RobotEngine, eyelid_offset: float, previous: float | None) -> float:
+    if previous == eyelid_offset:
+        return previous
+    engine.config = type(engine.config)(
+        **{**engine.config.__dict__, "eyelid_offset": eyelid_offset}
+    )
+    return eyelid_offset
+
+
 def debug_snapshot(
     *,
     now: float,
@@ -982,6 +1056,7 @@ def run(args: argparse.Namespace) -> int:
         idle_blink=args.idle_blink,
         blink_interval_s=args.blink_interval,
         gaze_mode=args.gaze_mode,
+        eyelid_offset=args.eyelid_offset,
     )
 
     active_id: int | None = None
@@ -989,6 +1064,7 @@ def run(args: argparse.Namespace) -> int:
     last_target: tuple[float, float] | None = None
     send_interval = 1.0 / args.send_hz
     applied_blink_settings: tuple[bool, float] | None = None
+    applied_eyelid_offset: float | None = None
     next_auto_blink_at = time.monotonic() + args.blink_interval
 
     engine.open()
@@ -1013,6 +1089,11 @@ def run(args: argparse.Namespace) -> int:
             if blink_enabled and now >= next_auto_blink_at:
                 if schedule_blink_if_ready(engine):
                     next_auto_blink_at = now + blink_interval_s
+            applied_eyelid_offset = apply_eyelid_offset(
+                engine,
+                mjpeg_server.expression_state_snapshot(),
+                applied_eyelid_offset,
+            )
             engine.maybe_start_next()
             gaze_mode = mjpeg_server.gaze_mode_snapshot()
 
