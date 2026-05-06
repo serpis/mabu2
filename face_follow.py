@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import socket
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -115,6 +116,7 @@ class SharedCameraMjpegServer:
                     {
                         **self.debug_snapshot,
                         "calibration": calibration,
+                        "pi_temperature_c": read_pi_temperature_c(),
                         "served_at": time.time(),
                     },
                     indent=2,
@@ -305,6 +307,11 @@ html,body{margin:0;height:100%;background:#111;color:#e8e8e8;font:14px system-ui
 main{height:100%;display:grid;grid-template-columns:minmax(0,1fr) 380px}
 .video{min-width:0;background:#000;display:grid;place-items:center}
 img{width:100%;height:100%;object-fit:contain}
+.status{position:fixed;top:10px;right:10px;z-index:10;display:flex;gap:8px;align-items:center;background:rgba(15,15,15,.86);border:1px solid #3a3a3a;border-radius:4px;padding:6px 9px;box-shadow:0 2px 12px rgba(0,0,0,.35)}
+.status span{color:#aeb4bd}
+.status strong{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#8ef0a1}
+.status.warm strong{color:#ffd166}
+.status.hot strong{color:#ff6b6b}
 aside{border-left:1px solid #333;background:#181818;overflow:auto}
 h1{font-size:16px;margin:12px 14px}
 button,input{font:inherit}
@@ -332,6 +339,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
 </head>
 <body>
 <main>
+  <div class="status" id="piStatus"><span>Pi temp</span><strong id="piTemp">-</strong></div>
   <section class="video"><img src="/stream" alt="Annotated camera stream"></section>
   <aside>
     <h1>Face Follow Debug</h1>
@@ -365,6 +373,18 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
 </main>
 <script>
 function fmt(n,d=1){return Number.isFinite(n)?n.toFixed(d):"-";}
+function renderPiTemp(value){
+  const status=document.getElementById("piStatus");
+  const temp=document.getElementById("piTemp");
+  status.classList.remove("warm","hot");
+  if(!Number.isFinite(value)){
+    temp.textContent="-";
+    return;
+  }
+  temp.textContent=`${fmt(value)} C`;
+  if(value >= 75) status.classList.add("hot");
+  else if(value >= 65) status.classList.add("warm");
+}
 const manualMode=document.getElementById("manualMode");
 const gazePad=document.getElementById("gazePad");
 const gazeMarker=document.getElementById("gazeMarker");
@@ -419,6 +439,7 @@ async function tick(){
     document.getElementById("target").textContent=d.target ? `yaw=${fmt(d.target.yaw)} pitch=${fmt(d.target.pitch)}` : "-";
     document.getElementById("targetSource").textContent=d.target_source || "-";
     document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
+    renderPiTemp(d.pi_temperature_c);
     renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
   }catch(e){
@@ -474,6 +495,35 @@ def parse_args() -> argparse.Namespace:
 
 def clamp(value: float, low: float, high: float) -> float:
     return min(max(value, low), high)
+
+
+def read_pi_temperature_c() -> float | None:
+    thermal_path = Path("/sys/class/thermal/thermal_zone0/temp")
+    try:
+        raw = thermal_path.read_text().strip()
+        value = float(raw)
+        if value > 200:
+            value /= 1000.0
+        return round(value, 1)
+    except (OSError, ValueError):
+        pass
+
+    try:
+        output = subprocess.check_output(
+            ["vcgencmd", "measure_temp"],
+            text=True,
+            timeout=0.2,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if "=" in output:
+        output = output.split("=", 1)[1]
+    output = output.split("'", 1)[0]
+    try:
+        return round(float(output), 1)
+    except ValueError:
+        return None
 
 
 def choose_face(frame: TrackedFaceFrame, active_id: int | None) -> FaceTrack | None:
