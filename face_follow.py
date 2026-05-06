@@ -8,15 +8,24 @@ import math
 import socket
 import threading
 import time
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from camera.face_detect import BOUNDARY, FaceTrack, RpicamFaceTracker, TrackedFaceFrame
 from robot_engine import RobotEngine, default_engine_config
 
 
 class SharedCameraMjpegServer:
-    def __init__(self, camera: RpicamFaceTracker, *, port: int) -> None:
+    def __init__(
+        self,
+        camera: RpicamFaceTracker,
+        *,
+        port: int,
+        calibration_file: str,
+    ) -> None:
         self.camera = camera
         self.port = port
+        self.calibration_file = Path(calibration_file)
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.socket: socket.socket | None = None
@@ -29,10 +38,26 @@ class SharedCameraMjpegServer:
             "sent": False,
             "faces": [],
         }
+        self.calibration_lock = threading.Lock()
+        self.calibration_enabled = False
+        self.manual_yaw = 0.0
+        self.manual_pitch = 0.0
+        self.pending_manual_gaze: tuple[float, float] | None = None
+        self.calibration_points: list[dict] = self._load_calibration_points()
 
     def set_debug(self, snapshot: dict) -> None:
         with self.debug_lock:
             self.debug_snapshot = snapshot
+
+    def is_calibration_enabled(self) -> bool:
+        with self.calibration_lock:
+            return self.calibration_enabled
+
+    def pop_pending_manual_gaze(self) -> tuple[float, float] | None:
+        with self.calibration_lock:
+            target = self.pending_manual_gaze
+            self.pending_manual_gaze = None
+            return target
 
     def start(self) -> None:
         if self.port <= 0 or self.thread is not None:
@@ -72,8 +97,9 @@ class SharedCameraMjpegServer:
         except Exception:
             conn.close()
             return
+        path = self._request_path(req)
 
-        if req.startswith(b"GET / "):
+        if path == "/":
             html = self._index_html()
             conn.sendall(
                 b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n"
@@ -82,10 +108,15 @@ class SharedCameraMjpegServer:
             conn.close()
             return
 
-        if req.startswith(b"GET /debug"):
+        if path.startswith("/debug"):
             with self.debug_lock:
+                calibration = self._calibration_state()
                 body = json.dumps(
-                    {**self.debug_snapshot, "served_at": time.time()},
+                    {
+                        **self.debug_snapshot,
+                        "calibration": calibration,
+                        "served_at": time.time(),
+                    },
                     indent=2,
                     sort_keys=True,
                 ).encode()
@@ -98,7 +129,15 @@ class SharedCameraMjpegServer:
             conn.close()
             return
 
-        if not req.startswith(b"GET /stream"):
+        if path.startswith("/calibration"):
+            try:
+                body = self._handle_calibration_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._calibration_state()}
+            self._send_json(conn, body)
+            return
+
+        if not path.startswith("/stream"):
             conn.sendall(b"HTTP/1.0 404 Not Found\r\n\r\n")
             conn.close()
             return
@@ -133,6 +172,121 @@ class SharedCameraMjpegServer:
         finally:
             conn.close()
 
+    def _request_path(self, req: bytes) -> str:
+        first_line = req.split(b"\r\n", 1)[0]
+        parts = first_line.split()
+        if len(parts) < 2:
+            return "/"
+        return parts[1].decode("utf-8", errors="replace")
+
+    def _send_json(self, conn: socket.socket, payload: dict, status: bytes = b"200 OK") -> None:
+        body = json.dumps(payload, indent=2, sort_keys=True).encode()
+        conn.sendall(
+            b"HTTP/1.0 " + status + b"\r\n"
+            b"Cache-Control: no-cache\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+        )
+        conn.close()
+
+    def _calibration_state(self) -> dict:
+        with self.calibration_lock:
+            return {
+                "enabled": self.calibration_enabled,
+                "manual_yaw": self.manual_yaw,
+                "manual_pitch": self.manual_pitch,
+                "file": str(self.calibration_file),
+                "points": list(self.calibration_points),
+            }
+
+    def _handle_calibration_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._calibration_state()
+
+        if action == "enable":
+            enabled = params.get("enabled", ["1"])[0] not in {"0", "false", "off", "no"}
+            with self.calibration_lock:
+                self.calibration_enabled = enabled
+            return self._calibration_state()
+
+        if action == "set":
+            yaw = float(params.get("yaw", [self.manual_yaw])[0])
+            pitch = float(params.get("pitch", [self.manual_pitch])[0])
+            apply_gaze = params.get("apply", ["0"])[0] in {"1", "true", "yes"}
+            with self.calibration_lock:
+                self.manual_yaw = yaw
+                self.manual_pitch = pitch
+                self.calibration_enabled = True
+                if apply_gaze:
+                    self.pending_manual_gaze = (yaw, pitch)
+            return self._calibration_state()
+
+        if action == "record":
+            yaw = float(params.get("yaw", [self.manual_yaw])[0])
+            pitch = float(params.get("pitch", [self.manual_pitch])[0])
+            point = self._record_calibration_point(yaw, pitch)
+            result = self._calibration_state()
+            result["recorded"] = point
+            return result
+
+        return {"error": f"unknown calibration action: {action}", **self._calibration_state()}
+
+    def _record_calibration_point(self, yaw: float, pitch: float) -> dict:
+        with self.debug_lock:
+            snapshot = dict(self.debug_snapshot)
+        selected_id = snapshot.get("selected_id") or snapshot.get("active_id")
+        faces = snapshot.get("faces") or []
+        face = None
+        if selected_id is not None:
+            face = next((item for item in faces if item.get("id") == selected_id), None)
+        if face is None and faces:
+            face = faces[0]
+        if face is None:
+            raise ValueError("no face available to record")
+
+        point = {
+            "timestamp": time.time(),
+            "frame_seq": snapshot.get("frame_seq"),
+            "face_id": face.get("id"),
+            "center": face.get("center"),
+            "center_norm": face.get("center_norm"),
+            "bbox": face.get("bbox"),
+            "yaw": yaw,
+            "pitch": pitch,
+        }
+        with self.calibration_lock:
+            self.manual_yaw = yaw
+            self.manual_pitch = pitch
+            self.calibration_enabled = True
+            self.calibration_points.append(point)
+            self._save_calibration_points_locked()
+        return point
+
+    def _load_calibration_points(self) -> list[dict]:
+        if not self.calibration_file.exists():
+            return []
+        try:
+            data = json.loads(self.calibration_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            return []
+        if isinstance(data, dict) and isinstance(data.get("points"), list):
+            return data["points"]
+        if isinstance(data, list):
+            return data
+        return []
+
+    def _save_calibration_points_locked(self) -> None:
+        self.calibration_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "updated_at": time.time(),
+            "points": self.calibration_points,
+        }
+        self.calibration_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
     def _index_html(self) -> bytes:
         return b"""<!doctype html>
 <html>
@@ -147,9 +301,16 @@ main{height:100%;display:grid;grid-template-columns:minmax(0,1fr) 380px}
 img{width:100%;height:100%;object-fit:contain}
 aside{border-left:1px solid #333;background:#181818;overflow:auto}
 h1{font-size:16px;margin:12px 14px}
+button,input{font:inherit}
+button{background:#2f6fed;color:white;border:0;border-radius:4px;padding:7px 10px;margin:4px 4px 4px 0}
+button.secondary{background:#333}
+label{display:block;margin:8px 14px;color:#c9c9c9}
+input[type=range]{width:100%}
 .row{display:grid;grid-template-columns:120px 1fr;gap:8px;padding:4px 14px;border-top:1px solid #252525}
 .k{color:#9ca3af}
 .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.panel{border-top:1px solid #333;padding:8px 0}
+.controls{padding:4px 14px}
 pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;white-space:pre-wrap}
 @media(max-width:900px){main{grid-template-columns:1fr;grid-template-rows:60vh auto}aside{border-left:0;border-top:1px solid #333}}
 </style>
@@ -165,11 +326,48 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">active</div><div class="v" id="active">-</div></div>
     <div class="row"><div class="k">target</div><div class="v" id="target">-</div></div>
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
+    <div class="panel">
+      <h1>Calibration</h1>
+      <div class="controls">
+        <button id="calOn">Manual on</button><button class="secondary" id="calOff">Manual off</button>
+      </div>
+      <label>Yaw <span class="v" id="yawValue">0.0</span><input id="yaw" type="range" min="-40" max="40" step="0.5" value="0"></label>
+      <label>Pitch <span class="v" id="pitchValue">0.0</span><input id="pitch" type="range" min="-20" max="20" step="0.5" value="0"></label>
+      <div class="controls">
+        <button id="apply">Apply gaze</button><button id="record">Record</button>
+      </div>
+      <div class="row"><div class="k">file</div><div class="v" id="calFile">-</div></div>
+      <div class="row"><div class="k">points</div><div class="v" id="calCount">0</div></div>
+      <pre id="points">[]</pre>
+    </div>
     <pre id="raw">{}</pre>
   </aside>
 </main>
 <script>
 function fmt(n,d=1){return Number.isFinite(n)?n.toFixed(d):"-";}
+const yaw=document.getElementById("yaw");
+const pitch=document.getElementById("pitch");
+function sliderValues(){return {yaw: Number(yaw.value), pitch: Number(pitch.value)};}
+function updateSliderLabels(){
+  document.getElementById("yawValue").textContent=fmt(Number(yaw.value));
+  document.getElementById("pitchValue").textContent=fmt(Number(pitch.value));
+}
+async function cal(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/calibration?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderCalibration(d);
+  return d;
+}
+function renderCalibration(c){
+  if(!c)return;
+  if(document.activeElement!==yaw && Number.isFinite(c.manual_yaw)) yaw.value=c.manual_yaw;
+  if(document.activeElement!==pitch && Number.isFinite(c.manual_pitch)) pitch.value=c.manual_pitch;
+  updateSliderLabels();
+  document.getElementById("calFile").textContent=c.file || "-";
+  document.getElementById("calCount").textContent=(c.points || []).length;
+  document.getElementById("points").textContent=JSON.stringify(c.points || [],null,2);
+}
 async function tick(){
   try{
     const r=await fetch("/debug",{cache:"no-store"});
@@ -180,11 +378,21 @@ async function tick(){
     document.getElementById("active").textContent=`active=${d.active_id ?? "-"} selected=${d.selected_id ?? "-"}`;
     document.getElementById("target").textContent=d.target ? `yaw=${fmt(d.target.yaw)} pitch=${fmt(d.target.pitch)}` : "-";
     document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
+    renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
   }catch(e){
     document.getElementById("state").textContent="debug fetch failed";
   }
 }
+yaw.addEventListener("input",updateSliderLabels);
+pitch.addEventListener("input",updateSliderLabels);
+function setManual(){cal("set",sliderValues()).catch(()=>{});}
+yaw.addEventListener("change",setManual);
+pitch.addEventListener("change",setManual);
+document.getElementById("calOn").addEventListener("click",()=>cal("enable",{enabled:"1"}));
+document.getElementById("calOff").addEventListener("click",()=>cal("enable",{enabled:"0"}));
+document.getElementById("apply").addEventListener("click",()=>cal("set",{...sliderValues(),apply:"1"}));
+document.getElementById("record").addEventListener("click",()=>cal("record",sliderValues()));
 setInterval(tick,250);
 tick();
 </script>
@@ -218,6 +426,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loop-sleep", type=float, default=0.003)
     parser.add_argument("--mjpeg-port", type=int, default=8080)
     parser.add_argument("--debug-jpeg-quality", type=int, default=80)
+    parser.add_argument("--calibration-file", default="face_follow_calibration.json")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -356,7 +565,11 @@ def run(args: argparse.Namespace) -> int:
         smoothing=args.track_smoothing,
         debug_jpeg_quality=args.debug_jpeg_quality if args.mjpeg_port else None,
     )
-    mjpeg_server = SharedCameraMjpegServer(camera, port=args.mjpeg_port)
+    mjpeg_server = SharedCameraMjpegServer(
+        camera,
+        port=args.mjpeg_port,
+        calibration_file=args.calibration_file,
+    )
 
     active_id: int | None = None
     last_sent_at = 0.0
@@ -372,6 +585,12 @@ def run(args: argparse.Namespace) -> int:
             now = time.monotonic()
             engine.read_serial()
 
+            manual_target = mjpeg_server.pop_pending_manual_gaze()
+            if manual_target is not None:
+                engine.send_direct_gaze(*manual_target)
+                last_sent_at = now
+                last_target = manual_target
+
             if camera.has_frame():
                 frame = camera.get_latest()
                 if frame is None:
@@ -381,6 +600,8 @@ def run(args: argparse.Namespace) -> int:
                 sent = False
                 if face is None:
                     active_id = None
+                elif mjpeg_server.is_calibration_enabled():
+                    active_id = face.track_id
                 else:
                     active_id = face.track_id
                     target = face_to_gaze(
