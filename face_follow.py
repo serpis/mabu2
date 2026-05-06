@@ -4,10 +4,106 @@ from __future__ import annotations
 
 import argparse
 import math
+import socket
+import threading
 import time
 
-from camera.face_detect import FaceTrack, RpicamFaceTracker, TrackedFaceFrame
+from camera.face_detect import BOUNDARY, FaceTrack, RpicamFaceTracker, TrackedFaceFrame
 from robot_engine import RobotEngine, default_engine_config
+
+
+class SharedCameraMjpegServer:
+    def __init__(self, camera: RpicamFaceTracker, *, port: int) -> None:
+        self.camera = camera
+        self.port = port
+        self.stop_event = threading.Event()
+        self.thread: threading.Thread | None = None
+        self.socket: socket.socket | None = None
+
+    def start(self) -> None:
+        if self.port <= 0 or self.thread is not None:
+            return
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+            self.thread = None
+
+    def _serve(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket = server
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", self.port))
+        server.listen(8)
+        server.settimeout(0.5)
+        print(f"MJPEG debug: http://0.0.0.0:{self.port}/", flush=True)
+        while not self.stop_event.is_set():
+            try:
+                conn, _ = server.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._serve_client, args=(conn,), daemon=True).start()
+
+    def _serve_client(self, conn: socket.socket) -> None:
+        try:
+            req = conn.recv(2048)
+        except Exception:
+            conn.close()
+            return
+
+        if req.startswith(b"GET / "):
+            html = (b"<html><body style='margin:0;background:#000'>"
+                    b"<img src='/stream' style='width:100vw;height:100vh;object-fit:contain'/>"
+                    b"</body></html>")
+            conn.sendall(
+                b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n"
+                b"Content-Length: " + str(len(html)).encode() + b"\r\n\r\n" + html
+            )
+            conn.close()
+            return
+
+        if not req.startswith(b"GET /stream"):
+            conn.sendall(b"HTTP/1.0 404 Not Found\r\n\r\n")
+            conn.close()
+            return
+
+        try:
+            conn.sendall(
+                b"HTTP/1.0 200 OK\r\n"
+                b"Cache-Control: no-cache\r\n"
+                b"Pragma: no-cache\r\n"
+                b"Content-Type: multipart/x-mixed-replace; boundary=" + BOUNDARY + b"\r\n\r\n"
+            )
+            last_seq = -1
+            while not self.stop_event.is_set():
+                item = self.camera.get_debug_jpeg()
+                if item is None:
+                    time.sleep(0.01)
+                    continue
+                jpeg, seq = item
+                if seq == last_seq:
+                    time.sleep(0.01)
+                    continue
+                last_seq = seq
+                payload = (
+                    b"--" + BOUNDARY + b"\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
+                    + jpeg + b"\r\n"
+                )
+                conn.sendall(payload)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            conn.close()
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +129,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-angle-delta", type=float, default=1.0)
     parser.add_argument("--eyelid-offset", type=float, default=-2.0)
     parser.add_argument("--loop-sleep", type=float, default=0.003)
-    parser.add_argument("--debug-jpeg-quality", type=int)
+    parser.add_argument("--mjpeg-port", type=int, default=8080)
+    parser.add_argument("--debug-jpeg-quality", type=int, default=80)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
@@ -107,6 +204,8 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--send-hz must be > 0")
     if args.loop_sleep < 0:
         raise ValueError("--loop-sleep must be >= 0")
+    if args.mjpeg_port < 0:
+        raise ValueError("--mjpeg-port must be >= 0")
 
     engine = RobotEngine(
         default_engine_config(
@@ -125,8 +224,9 @@ def run(args: argparse.Namespace) -> int:
         max_missed_frames=args.track_max_missed,
         max_match_distance=args.track_max_distance,
         smoothing=args.track_smoothing,
-        debug_jpeg_quality=args.debug_jpeg_quality,
+        debug_jpeg_quality=args.debug_jpeg_quality if args.mjpeg_port else None,
     )
+    mjpeg_server = SharedCameraMjpegServer(camera, port=args.mjpeg_port)
 
     active_id: int | None = None
     last_sent_at = 0.0
@@ -135,6 +235,7 @@ def run(args: argparse.Namespace) -> int:
 
     engine.open()
     camera.start()
+    mjpeg_server.start()
     print("face follow ready. Ctrl-C to stop.", flush=True)
     try:
         while True:
@@ -183,6 +284,7 @@ def run(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        mjpeg_server.stop()
         camera.stop()
         engine.close()
 
