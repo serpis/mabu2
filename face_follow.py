@@ -199,6 +199,10 @@ class SharedCameraMjpegServer:
                 "points": list(self.calibration_points),
             }
 
+    def calibration_points_snapshot(self) -> list[dict]:
+        with self.calibration_lock:
+            return list(self.calibration_points)
+
     def _handle_calibration_request(self, path: str) -> dict:
         parsed = urlsplit(path)
         params = parse_qs(parsed.query)
@@ -336,6 +340,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">age ms</div><div class="v" id="age">-</div></div>
     <div class="row"><div class="k">active</div><div class="v" id="active">-</div></div>
     <div class="row"><div class="k">target</div><div class="v" id="target">-</div></div>
+    <div class="row"><div class="k">target source</div><div class="v" id="targetSource">-</div></div>
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
     <div class="panel">
       <h1>Calibration</h1>
@@ -410,6 +415,7 @@ async function tick(){
     document.getElementById("age").textContent=fmt(d.frame_age_ms);
     document.getElementById("active").textContent=`active=${d.active_id ?? "-"} selected=${d.selected_id ?? "-"}`;
     document.getElementById("target").textContent=d.target ? `yaw=${fmt(d.target.yaw)} pitch=${fmt(d.target.pitch)}` : "-";
+    document.getElementById("targetSource").textContent=d.target_source || "-";
     document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
     renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
@@ -451,8 +457,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vertical-fov", type=float, default=49.0)
     parser.add_argument("--yaw-scale", type=float, default=1.0)
     parser.add_argument("--pitch-scale", type=float, default=1.0)
-    parser.add_argument("--max-yaw", type=float, default=35.0)
-    parser.add_argument("--max-pitch", type=float, default=18.0)
+    parser.add_argument("--max-yaw", type=float, default=60.0)
+    parser.add_argument("--max-pitch", type=float, default=30.0)
     parser.add_argument("--send-hz", type=float, default=15.0)
     parser.add_argument("--min-angle-delta", type=float, default=1.0)
     parser.add_argument("--eyelid-offset", type=float, default=-2.0)
@@ -510,6 +516,66 @@ def face_to_gaze(
     return clamp(yaw, -max_yaw, max_yaw), clamp(pitch, -max_pitch, max_pitch)
 
 
+def calibrated_frame_face_to_gaze(
+    face: FaceTrack,
+    frame: TrackedFaceFrame,
+    calibration_points: list[dict],
+    *,
+    fallback: tuple[float, float],
+    max_yaw: float,
+    max_pitch: float,
+    neighbors: int = 4,
+) -> tuple[tuple[float, float], str]:
+    usable: list[tuple[float, float, float, float]] = []
+    for point in calibration_points:
+        xy = point.get("eye_center_norm") or point.get("center_norm")
+        yaw = point.get("yaw")
+        pitch = point.get("pitch")
+        if not (
+            isinstance(xy, list)
+            and len(xy) == 2
+            and isinstance(yaw, (int, float))
+            and isinstance(pitch, (int, float))
+        ):
+            continue
+        usable.append((float(xy[0]), float(xy[1]), float(yaw), float(pitch)))
+
+    if len(usable) < 2:
+        return fallback, "fov_fallback"
+
+    ex, ey = face.eye_center
+    nx = (ex - frame.width / 2.0) / max(frame.width / 2.0, 1.0)
+    ny = (ey - frame.height / 2.0) / max(frame.height / 2.0, 1.0)
+    ranked = sorted(
+        (
+            (math.hypot(nx - px, ny - py), px, py, yaw, pitch)
+            for px, py, yaw, pitch in usable
+        ),
+        key=lambda item: item[0],
+    )
+    nearest = ranked[:max(1, min(neighbors, len(ranked)))]
+    if nearest[0][0] < 1e-6:
+        _, _px, _py, yaw, pitch = nearest[0]
+        return (
+            clamp(yaw, -max_yaw, max_yaw),
+            clamp(pitch, -max_pitch, max_pitch),
+        ), "calibrated_exact"
+
+    weighted_yaw = 0.0
+    weighted_pitch = 0.0
+    total_weight = 0.0
+    for distance, _px, _py, yaw, pitch in nearest:
+        weight = 1.0 / max(distance, 1e-6)
+        weighted_yaw += yaw * weight
+        weighted_pitch += pitch * weight
+        total_weight += weight
+
+    return (
+        clamp(weighted_yaw / total_weight, -max_yaw, max_yaw),
+        clamp(weighted_pitch / total_weight, -max_pitch, max_pitch),
+    ), f"calibrated_idw_{len(nearest)}"
+
+
 def should_send(
     now: float,
     target: tuple[float, float],
@@ -535,6 +601,7 @@ def debug_snapshot(
     active_id: int | None,
     face: FaceTrack | None,
     target: tuple[float, float] | None,
+    target_source: str,
     sent: bool,
     last_sent_at: float,
     send_hz: float,
@@ -559,6 +626,7 @@ def debug_snapshot(
         "active_id": active_id,
         "selected_id": selected_id,
         "target": target_dict,
+        "target_source": target_source,
         "sent": sent,
         "last_sent_age_ms": (
             round((now - last_sent_at) * 1000.0, 2)
@@ -630,20 +698,30 @@ def run(args: argparse.Namespace) -> int:
                     continue
                 face = choose_face(frame, active_id)
                 target = None
+                target_source = "none"
                 sent = False
                 if face is None:
                     active_id = None
                 elif mjpeg_server.is_calibration_enabled():
                     active_id = face.track_id
+                    target_source = "manual_calibration"
                 else:
                     active_id = face.track_id
-                    target = face_to_gaze(
+                    fallback = face_to_gaze(
                         face,
                         frame,
                         horizontal_fov=args.horizontal_fov,
                         vertical_fov=args.vertical_fov,
                         yaw_scale=args.yaw_scale,
                         pitch_scale=args.pitch_scale,
+                        max_yaw=args.max_yaw,
+                        max_pitch=args.max_pitch,
+                    )
+                    target, target_source = calibrated_frame_face_to_gaze(
+                        face,
+                        frame,
+                        mjpeg_server.calibration_points_snapshot(),
+                        fallback=fallback,
                         max_yaw=args.max_yaw,
                         max_pitch=args.max_pitch,
                     )
@@ -673,6 +751,7 @@ def run(args: argparse.Namespace) -> int:
                         active_id=active_id,
                         face=face,
                         target=target,
+                        target_source=target_source,
                         sent=sent,
                         last_sent_at=last_sent_at,
                         send_hz=args.send_hz,
