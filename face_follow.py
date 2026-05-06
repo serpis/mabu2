@@ -307,12 +307,21 @@ button,input{font:inherit}
 button{background:#2f6fed;color:white;border:0;border-radius:4px;padding:7px 10px;margin:4px 4px 4px 0}
 button.secondary{background:#333}
 label{display:block;margin:8px 14px;color:#c9c9c9}
-input[type=range]{width:100%}
 .row{display:grid;grid-template-columns:120px 1fr;gap:8px;padding:4px 14px;border-top:1px solid #252525}
 .k{color:#9ca3af}
 .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .panel{border-top:1px solid #333;padding:8px 0}
 .controls{padding:4px 14px}
+.gaze-pad{position:relative;margin:10px 14px;height:220px;background:#080808;border:1px solid #444;touch-action:none;cursor:crosshair}
+.gaze-pad:before,.gaze-pad:after{content:"";position:absolute;background:#333}
+.gaze-pad:before{left:50%;top:0;bottom:0;width:1px}
+.gaze-pad:after{top:50%;left:0;right:0;height:1px}
+.gaze-marker{position:absolute;width:14px;height:14px;border:2px solid #ff4fd8;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 8px #ff4fd8;pointer-events:none}
+.gaze-axis{position:absolute;color:#888;font-size:11px;pointer-events:none}
+.gaze-axis.left{left:6px;top:50%;transform:translateY(-50%)}
+.gaze-axis.right{right:6px;top:50%;transform:translateY(-50%)}
+.gaze-axis.up{top:5px;left:50%;transform:translateX(-50%)}
+.gaze-axis.down{bottom:5px;left:50%;transform:translateX(-50%)}
 pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;white-space:pre-wrap}
 @media(max-width:900px){main{grid-template-columns:1fr;grid-template-rows:60vh auto}aside{border-left:0;border-top:1px solid #333}}
 </style>
@@ -330,9 +339,14 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
     <div class="panel">
       <h1>Calibration</h1>
-      <label><input id="manualMode" type="checkbox"> Direct from sliders</label>
-      <label>Yaw <span class="v" id="yawValue">0.0</span><input id="yaw" type="range" min="-40" max="40" step="0.5" value="0"></label>
-      <label>Pitch <span class="v" id="pitchValue">0.0</span><input id="pitch" type="range" min="-20" max="20" step="0.5" value="0"></label>
+      <label><input id="manualMode" type="checkbox"> Direct from gaze pad</label>
+      <div class="gaze-pad" id="gazePad">
+        <div class="gaze-axis left">left</div><div class="gaze-axis right">right</div>
+        <div class="gaze-axis up">up</div><div class="gaze-axis down">down</div>
+        <div class="gaze-marker" id="gazeMarker"></div>
+      </div>
+      <div class="row"><div class="k">manual yaw</div><div class="v" id="yawValue">0.0</div></div>
+      <div class="row"><div class="k">manual pitch</div><div class="v" id="pitchValue">0.0</div></div>
       <div class="controls">
         <button id="apply">Apply gaze</button><button id="record">Record</button>
       </div>
@@ -345,13 +359,30 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
 </main>
 <script>
 function fmt(n,d=1){return Number.isFinite(n)?n.toFixed(d):"-";}
-const yaw=document.getElementById("yaw");
-const pitch=document.getElementById("pitch");
 const manualMode=document.getElementById("manualMode");
-function sliderValues(){return {yaw: Number(yaw.value), pitch: Number(pitch.value)};}
-function updateSliderLabels(){
-  document.getElementById("yawValue").textContent=fmt(Number(yaw.value));
-  document.getElementById("pitchValue").textContent=fmt(Number(pitch.value));
+const gazePad=document.getElementById("gazePad");
+const gazeMarker=document.getElementById("gazeMarker");
+let manualYaw=0;
+let manualPitch=0;
+const yawMin=-40, yawMax=40, pitchMin=-20, pitchMax=20;
+function manualValues(){return {yaw: manualYaw, pitch: manualPitch};}
+function updateManual(yaw,pitch){
+  manualYaw=Math.max(yawMin,Math.min(yawMax,yaw));
+  manualPitch=Math.max(pitchMin,Math.min(pitchMax,pitch));
+  document.getElementById("yawValue").textContent=fmt(manualYaw);
+  document.getElementById("pitchValue").textContent=fmt(manualPitch);
+  const x=(manualYaw-yawMin)/(yawMax-yawMin)*100;
+  const y=(pitchMax-manualPitch)/(pitchMax-pitchMin)*100;
+  gazeMarker.style.left=`${x}%`;
+  gazeMarker.style.top=`${y}%`;
+}
+function padTarget(ev){
+  const r=gazePad.getBoundingClientRect();
+  const x=Math.max(0,Math.min(1,(ev.clientX-r.left)/r.width));
+  const y=Math.max(0,Math.min(1,(ev.clientY-r.top)/r.height));
+  const yaw=yawMin+x*(yawMax-yawMin);
+  const pitch=pitchMax-y*(pitchMax-pitchMin);
+  return {yaw: Math.round(yaw*2)/2, pitch: Math.round(pitch*2)/2};
 }
 async function cal(action, extra={}){
   const p=new URLSearchParams({action, ...extra});
@@ -363,9 +394,9 @@ async function cal(action, extra={}){
 function renderCalibration(c){
   if(!c)return;
   manualMode.checked=!!c.enabled;
-  if(document.activeElement!==yaw && Number.isFinite(c.manual_yaw)) yaw.value=c.manual_yaw;
-  if(document.activeElement!==pitch && Number.isFinite(c.manual_pitch)) pitch.value=c.manual_pitch;
-  updateSliderLabels();
+  if(Number.isFinite(c.manual_yaw) && Number.isFinite(c.manual_pitch)){
+    updateManual(c.manual_yaw,c.manual_pitch);
+  }
   document.getElementById("calFile").textContent=c.file || "-";
   document.getElementById("calCount").textContent=(c.points || []).length;
   document.getElementById("points").textContent=JSON.stringify(c.points || [],null,2);
@@ -386,14 +417,15 @@ async function tick(){
     document.getElementById("state").textContent="debug fetch failed";
   }
 }
-yaw.addEventListener("input",updateSliderLabels);
-pitch.addEventListener("input",updateSliderLabels);
-function setManual(){cal("set",sliderValues()).catch(()=>{});}
-yaw.addEventListener("change",setManual);
-pitch.addEventListener("change",setManual);
 manualMode.addEventListener("change",()=>cal("enable",{enabled:manualMode.checked ? "1" : "0"}));
-document.getElementById("apply").addEventListener("click",()=>cal("set",{...sliderValues(),apply:"1"}));
-document.getElementById("record").addEventListener("click",()=>cal("record",sliderValues()));
+gazePad.addEventListener("pointerdown",(ev)=>{
+  const target=padTarget(ev);
+  updateManual(target.yaw,target.pitch);
+  cal("set",{...target,apply:"1"}).catch(()=>{});
+});
+document.getElementById("apply").addEventListener("click",()=>cal("set",{...manualValues(),apply:"1"}));
+document.getElementById("record").addEventListener("click",()=>cal("record",manualValues()));
+updateManual(0,0);
 setInterval(tick,250);
 tick();
 </script>
