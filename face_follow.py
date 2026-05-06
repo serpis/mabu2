@@ -338,6 +338,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">state</div><div class="v" id="state">-</div></div>
     <div class="row"><div class="k">frame</div><div class="v" id="frame">-</div></div>
     <div class="row"><div class="k">age ms</div><div class="v" id="age">-</div></div>
+    <div class="row"><div class="k">process ms</div><div class="v" id="processMs">-</div></div>
     <div class="row"><div class="k">active</div><div class="v" id="active">-</div></div>
     <div class="row"><div class="k">target</div><div class="v" id="target">-</div></div>
     <div class="row"><div class="k">target source</div><div class="v" id="targetSource">-</div></div>
@@ -413,6 +414,7 @@ async function tick(){
     document.getElementById("state").textContent=d.state || "-";
     document.getElementById("frame").textContent=`seq=${d.frame_seq ?? "-"} faces=${d.visible_faces ?? 0}/${d.detections ?? 0}`;
     document.getElementById("age").textContent=fmt(d.frame_age_ms);
+    document.getElementById("processMs").textContent=fmt(d.processing_ms);
     document.getElementById("active").textContent=`active=${d.active_id ?? "-"} selected=${d.selected_id ?? "-"}`;
     document.getElementById("target").textContent=d.target ? `yaw=${fmt(d.target.yaw)} pitch=${fmt(d.target.pitch)}` : "-";
     document.getElementById("targetSource").textContent=d.target_source || "-";
@@ -622,6 +624,11 @@ def debug_snapshot(
         "width": frame.width,
         "height": frame.height,
         "detections": frame.detections,
+        "processing_ms": (
+            round(frame.processing_ms, 2)
+            if frame.processing_ms is not None
+            else None
+        ),
         "visible_faces": len(frame.visible_tracks),
         "active_id": active_id,
         "selected_id": selected_id,

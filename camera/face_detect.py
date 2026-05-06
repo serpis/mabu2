@@ -121,6 +121,7 @@ class TrackedFaceFrame:
     height: int
     detections: int
     tracks: tuple[FaceTrack, ...]
+    processing_ms: float | None = None
 
     @property
     def visible_tracks(self) -> tuple[FaceTrack, ...]:
@@ -134,6 +135,7 @@ class TrackedFaceFrame:
             "width": self.width,
             "height": self.height,
             "detections": self.detections,
+            "processing_ms": self.processing_ms,
             "visible_faces": len(self.visible_tracks),
             "faces": [track_to_dict(track, (self.width, self.height)) for track in self.tracks],
         }
@@ -262,6 +264,7 @@ class FaceTrackingPipeline:
         timestamp: float | None = None,
         monotonic_timestamp: float | None = None,
     ) -> TrackedFaceFrame:
+        started_at = time.monotonic()
         height, width = frame.shape[:2]
         if (width, height) != self.input_size:
             self.detector.setInputSize((width, height))
@@ -269,6 +272,7 @@ class FaceTrackingPipeline:
         _, faces = self.detector.detect(frame)
         detections = detections_from_yunet(faces)
         tracks = self.tracker.update(detections, seq=seq, image_size=(width, height))
+        processing_ms = (time.monotonic() - started_at) * 1000.0
         return TrackedFaceFrame(
             seq=seq,
             timestamp=time.time() if timestamp is None else timestamp,
@@ -279,6 +283,7 @@ class FaceTrackingPipeline:
             height=height,
             detections=len(detections),
             tracks=tuple(tracks),
+            processing_ms=processing_ms,
         )
 
 
@@ -330,6 +335,7 @@ class RpicamFaceTracker:
             "rpicam-vid", "-t", "0", "-n",
             "--width", str(self.width), "--height", str(self.height),
             "--framerate", str(self.fps),
+            "--buffer-count", "2", "--flush",
             "--codec", "mjpeg", "--inline", "-o", "-",
         ]
         print(f"starting: {' '.join(cmd)}", file=sys.stderr)
@@ -396,6 +402,8 @@ class RpicamFaceTracker:
             with self._raw_lock:
                 jpeg_bytes = self._raw_slot.get("jpeg")
                 seq = self._raw_slot.get("seq", 0)
+                timestamp = self._raw_slot.get("timestamp")
+                monotonic_timestamp = self._raw_slot.get("monotonic_timestamp")
             if jpeg_bytes is None or seq == last_seq:
                 time.sleep(0.005)
                 continue
@@ -406,7 +414,12 @@ class RpicamFaceTracker:
             if frame is None:
                 continue
 
-            tracked_frame = self.pipeline.process_frame(frame, seq=seq)
+            tracked_frame = self.pipeline.process_frame(
+                frame,
+                seq=seq,
+                timestamp=timestamp,
+                monotonic_timestamp=monotonic_timestamp,
+            )
             debug_jpeg = None
             if encode_params is not None:
                 visible = annotate_tracks(frame, list(tracked_frame.tracks))
@@ -568,9 +581,13 @@ def reader_thread(stream, slot: dict, slot_lock: threading.Lock,
             last_end = end + 2
             buf = buf[last_end:]
         if last_jpeg is not None:
+            now = time.time()
+            monotonic_now = time.monotonic()
             with slot_lock:
                 slot["jpeg"] = last_jpeg
                 slot["seq"] = slot.get("seq", 0) + 1
+                slot["timestamp"] = now
+                slot["monotonic_timestamp"] = monotonic_now
 
 
 def capture_loop(width: int, height: int, fps: int, threshold: float,
