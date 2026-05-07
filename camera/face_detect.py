@@ -25,6 +25,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+try:
+    import zxingcpp
+except ImportError:
+    zxingcpp = None
+
 MODEL_URL = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/"
     "face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -687,6 +692,10 @@ def detections_from_yunet(faces: np.ndarray | None) -> list[FaceDetection]:
 
 
 def detect_qr_codes(detector: cv2.QRCodeDetector, frame: np.ndarray) -> list[QRDetection]:
+    zxing_detections = detect_qr_codes_zxing(frame)
+    if zxing_detections:
+        return zxing_detections
+
     detections: list[QRDetection] = []
     try:
         ok, decoded_info, points, _straight = detector.detectAndDecodeMulti(frame)
@@ -719,6 +728,38 @@ def detect_qr_codes(detector: cv2.QRCodeDetector, frame: np.ndarray) -> list[QRD
         if decoded:
             detections.append(QRDetection(data=decoded, points=point_tuple))
     return detections
+
+
+def detect_qr_codes_zxing(frame: np.ndarray) -> list[QRDetection]:
+    if zxingcpp is None:
+        return []
+
+    for scale in (1.0, 2.0):
+        image = (
+            cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            if scale != 1.0
+            else frame
+        )
+        try:
+            barcodes = zxingcpp.read_barcodes(image)
+        except Exception:
+            continue
+
+        detections: list[QRDetection] = []
+        for barcode in barcodes:
+            if "QRCode" not in str(barcode.format) or not barcode.text:
+                continue
+            position = barcode.position
+            points = (
+                (float(position.top_left.x) / scale, float(position.top_left.y) / scale),
+                (float(position.top_right.x) / scale, float(position.top_right.y) / scale),
+                (float(position.bottom_right.x) / scale, float(position.bottom_right.y) / scale),
+                (float(position.bottom_left.x) / scale, float(position.bottom_left.y) / scale),
+            )
+            detections.append(QRDetection(data=str(barcode.text), points=points))
+        if detections:
+            return detections
+    return []
 
 
 def decode_qr_from_quad(
