@@ -46,6 +46,27 @@ class FaceDetection:
 
 
 @dataclass
+class QRDetection:
+    data: str
+    points: tuple[tuple[float, float], ...]
+
+    @property
+    def bbox(self) -> tuple[float, float, float, float]:
+        xs = [point[0] for point in self.points]
+        ys = [point[1] for point in self.points]
+        x1, x2 = min(xs), max(xs)
+        y1, y2 = min(ys), max(ys)
+        return x1, y1, x2 - x1, y2 - y1
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return (
+            sum(point[0] for point in self.points) / max(len(self.points), 1),
+            sum(point[1] for point in self.points) / max(len(self.points), 1),
+        )
+
+
+@dataclass
 class FaceTrack:
     track_id: int
     bbox: tuple[float, float, float, float]
@@ -112,6 +133,60 @@ class FaceTrack:
         self.history = self.history[-8:]
 
 
+@dataclass
+class QRTrack:
+    track_id: int
+    data: str
+    points: tuple[tuple[float, float], ...]
+    smoothed_bbox: tuple[float, float, float, float]
+    first_seen_seq: int
+    last_seen_seq: int
+    age_frames: int = 1
+    missed_frames: int = 0
+    velocity: tuple[float, float] = (0.0, 0.0)
+    visible: bool = True
+    updated_seq: int = 0
+    history: list[tuple[float, float]] = field(default_factory=list)
+
+    @property
+    def center(self) -> tuple[float, float]:
+        x, y, w, h = self.smoothed_bbox
+        return x + w / 2.0, y + h / 2.0
+
+    def update(self, detection: QRDetection, seq: int, smoothing: float) -> None:
+        old_center = self.center
+        sx, sy, sw, sh = self.smoothed_bbox
+        x, y, w, h = detection.bbox
+        a = smoothing
+        self.data = detection.data
+        self.points = detection.points
+        self.smoothed_bbox = (
+            sx * a + x * (1.0 - a),
+            sy * a + y * (1.0 - a),
+            sw * a + w * (1.0 - a),
+            sh * a + h * (1.0 - a),
+        )
+        new_center = self.center
+        self.velocity = (new_center[0] - old_center[0], new_center[1] - old_center[1])
+        self.last_seen_seq = seq
+        self.updated_seq = seq
+        self.age_frames += 1
+        self.missed_frames = 0
+        self.visible = True
+        self.history.append(new_center)
+        self.history = self.history[-8:]
+
+    def mark_missed(self) -> None:
+        x, y, w, h = self.smoothed_bbox
+        vx, vy = self.velocity
+        self.smoothed_bbox = (x + vx, y + vy, w, h)
+        self.age_frames += 1
+        self.missed_frames += 1
+        self.visible = False
+        self.history.append(self.center)
+        self.history = self.history[-8:]
+
+
 @dataclass(frozen=True)
 class TrackedFaceFrame:
     seq: int
@@ -121,11 +196,17 @@ class TrackedFaceFrame:
     height: int
     detections: int
     tracks: tuple[FaceTrack, ...]
+    qr_detections: int
+    qr_tracks: tuple[QRTrack, ...]
     processing_ms: float | None = None
 
     @property
     def visible_tracks(self) -> tuple[FaceTrack, ...]:
         return tuple(track for track in self.tracks if track.visible)
+
+    @property
+    def visible_qr_tracks(self) -> tuple[QRTrack, ...]:
+        return tuple(track for track in self.qr_tracks if track.visible)
 
     def as_dict(self) -> dict:
         return {
@@ -137,7 +218,10 @@ class TrackedFaceFrame:
             "detections": self.detections,
             "processing_ms": self.processing_ms,
             "visible_faces": len(self.visible_tracks),
+            "qr_detections": self.qr_detections,
+            "visible_qrs": len(self.visible_qr_tracks),
             "faces": [track_to_dict(track, (self.width, self.height)) for track in self.tracks],
+            "qrs": [qr_track_to_dict(track, (self.width, self.height)) for track in self.qr_tracks],
         }
 
 
@@ -223,6 +307,90 @@ class GreedyFaceTracker:
         return distance * 2.0 + iou_penalty * 0.4 + size_penalty * 0.2
 
 
+class GreedyQRTracker:
+    def __init__(
+        self,
+        *,
+        max_missed_frames: int,
+        max_match_distance: float,
+        smoothing: float,
+    ) -> None:
+        self.max_missed_frames = max(0, max_missed_frames)
+        self.max_match_distance = max_match_distance
+        self.smoothing = min(max(smoothing, 0.0), 0.95)
+        self.next_track_id = 1
+        self.tracks: list[QRTrack] = []
+
+    def update(
+        self,
+        detections: list[QRDetection],
+        *,
+        seq: int,
+        image_size: tuple[int, int],
+    ) -> list[QRTrack]:
+        active_tracks = [track for track in self.tracks if track.missed_frames <= self.max_missed_frames]
+        pairs: list[tuple[float, int, int]] = []
+        for track_i, track in enumerate(active_tracks):
+            for detection_i, detection in enumerate(detections):
+                cost = self.match_cost(track, detection, image_size)
+                if cost <= self.max_match_distance:
+                    pairs.append((cost, track_i, detection_i))
+        pairs.sort(key=lambda item: item[0])
+
+        matched_tracks: set[int] = set()
+        matched_detections: set[int] = set()
+        for _, track_i, detection_i in pairs:
+            if track_i in matched_tracks or detection_i in matched_detections:
+                continue
+            active_tracks[track_i].update(detections[detection_i], seq, self.smoothing)
+            matched_tracks.add(track_i)
+            matched_detections.add(detection_i)
+
+        for track_i, track in enumerate(active_tracks):
+            if track_i not in matched_tracks:
+                track.mark_missed()
+
+        for detection_i, detection in enumerate(detections):
+            if detection_i in matched_detections:
+                continue
+            track = QRTrack(
+                track_id=self.next_track_id,
+                data=detection.data,
+                points=detection.points,
+                smoothed_bbox=detection.bbox,
+                first_seen_seq=seq,
+                last_seen_seq=seq,
+                updated_seq=seq,
+                history=[detection.center],
+            )
+            self.next_track_id += 1
+            active_tracks.append(track)
+
+        self.tracks = [
+            track for track in active_tracks
+            if track.missed_frames <= self.max_missed_frames
+        ]
+        return list(self.tracks)
+
+    def match_cost(
+        self,
+        track: QRTrack,
+        detection: QRDetection,
+        image_size: tuple[int, int],
+    ) -> float:
+        if track.data and detection.data and track.data != detection.data:
+            return math.inf
+
+        width, height = image_size
+        diag = math.hypot(width, height)
+        tx, ty = track.center
+        dx, dy = detection.center
+        distance = math.hypot(tx - dx, ty - dy) / max(diag, 1.0)
+        iou_penalty = 1.0 - bbox_iou(track.smoothed_bbox, detection.bbox)
+        size_penalty = bbox_size_delta(track.smoothed_bbox, detection.bbox)
+        return distance * 1.4 + iou_penalty * 0.35 + size_penalty * 0.15
+
+
 class FaceTrackingPipeline:
     """Local module interface for frame -> tracked faces.
 
@@ -255,6 +423,12 @@ class FaceTrackingPipeline:
             max_match_distance=max_match_distance,
             smoothing=smoothing,
         )
+        self.qr_detector = cv2.QRCodeDetector()
+        self.qr_tracker = GreedyQRTracker(
+            max_missed_frames=max_missed_frames,
+            max_match_distance=max_match_distance,
+            smoothing=smoothing,
+        )
 
     def process_frame(
         self,
@@ -263,6 +437,7 @@ class FaceTrackingPipeline:
         seq: int,
         timestamp: float | None = None,
         monotonic_timestamp: float | None = None,
+        detect_qr: bool = True,
     ) -> TrackedFaceFrame:
         started_at = time.monotonic()
         height, width = frame.shape[:2]
@@ -272,6 +447,8 @@ class FaceTrackingPipeline:
         _, faces = self.detector.detect(frame)
         detections = detections_from_yunet(faces)
         tracks = self.tracker.update(detections, seq=seq, image_size=(width, height))
+        qr_detections = detect_qr_codes(self.qr_detector, frame) if detect_qr else []
+        qr_tracks = self.qr_tracker.update(qr_detections, seq=seq, image_size=(width, height))
         processing_ms = (time.monotonic() - started_at) * 1000.0
         return TrackedFaceFrame(
             seq=seq,
@@ -283,6 +460,8 @@ class FaceTrackingPipeline:
             height=height,
             detections=len(detections),
             tracks=tuple(tracks),
+            qr_detections=len(qr_detections),
+            qr_tracks=tuple(qr_tracks),
             processing_ms=processing_ms,
         )
 
@@ -301,11 +480,14 @@ class RpicamFaceTracker:
         max_match_distance: float = 0.7,
         smoothing: float = 0.65,
         debug_jpeg_quality: int | None = None,
+        qr_enabled: bool = False,
     ) -> None:
         self.width = width
         self.height = height
         self.fps = fps
         self.debug_jpeg_quality = debug_jpeg_quality
+        self._qr_enabled = qr_enabled
+        self._qr_enabled_lock = threading.Lock()
         self.pipeline = FaceTrackingPipeline(
             width=width,
             height=height,
@@ -391,6 +573,14 @@ class RpicamFaceTracker:
                 return None
             return self._latest_jpeg, self._latest_frame.seq
 
+    def set_qr_enabled(self, enabled: bool) -> None:
+        with self._qr_enabled_lock:
+            self._qr_enabled = enabled
+
+    def is_qr_enabled(self) -> bool:
+        with self._qr_enabled_lock:
+            return self._qr_enabled
+
     def _process_loop(self) -> None:
         encode_params = (
             [int(cv2.IMWRITE_JPEG_QUALITY), self.debug_jpeg_quality]
@@ -414,17 +604,23 @@ class RpicamFaceTracker:
             if frame is None:
                 continue
 
+            detect_qr = self.is_qr_enabled()
             tracked_frame = self.pipeline.process_frame(
                 frame,
                 seq=seq,
                 timestamp=timestamp,
                 monotonic_timestamp=monotonic_timestamp,
+                detect_qr=detect_qr,
             )
             debug_jpeg = None
             if encode_params is not None:
-                visible = annotate_tracks(frame, list(tracked_frame.tracks))
+                visible_faces, visible_qrs = annotate_tracks(
+                    frame,
+                    list(tracked_frame.tracks),
+                    list(tracked_frame.qr_tracks),
+                )
                 cv2.putText(
-                    frame, f"faces: {visible}", (8, 22),
+                    frame, f"faces: {visible_faces} qr: {visible_qrs}", (8, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA,
                 )
                 ok, enc = cv2.imencode(".jpg", frame, encode_params)
@@ -490,6 +686,39 @@ def detections_from_yunet(faces: np.ndarray | None) -> list[FaceDetection]:
     return detections
 
 
+def detect_qr_codes(detector: cv2.QRCodeDetector, frame: np.ndarray) -> list[QRDetection]:
+    detections: list[QRDetection] = []
+    try:
+        ok, decoded_info, points, _straight = detector.detectAndDecodeMulti(frame)
+    except cv2.error:
+        ok, decoded_info, points = False, (), None
+
+    if ok and points is not None:
+        for data, qr_points in zip(decoded_info, points):
+            if not data:
+                continue
+            point_tuple = tuple(
+                (float(point[0]), float(point[1]))
+                for point in qr_points
+            )
+            if len(point_tuple) >= 4:
+                detections.append(QRDetection(data=str(data), points=point_tuple))
+        return detections
+
+    try:
+        data, points, _straight = detector.detectAndDecode(frame)
+    except cv2.error:
+        return detections
+    if not data or points is None:
+        return detections
+
+    point_array = points.reshape(-1, 2)
+    point_tuple = tuple((float(point[0]), float(point[1])) for point in point_array)
+    if len(point_tuple) >= 4:
+        detections.append(QRDetection(data=str(data), points=point_tuple))
+    return detections
+
+
 def track_to_dict(track: FaceTrack, image_size: tuple[int, int]) -> dict:
     width, height = image_size
     x, y, w, h = track.smoothed_bbox
@@ -523,7 +752,34 @@ def track_to_dict(track: FaceTrack, image_size: tuple[int, int]) -> dict:
     }
 
 
-def annotate_tracks(frame: np.ndarray, tracks: list[FaceTrack]) -> int:
+def qr_track_to_dict(track: QRTrack, image_size: tuple[int, int]) -> dict:
+    width, height = image_size
+    x, y, w, h = track.smoothed_bbox
+    cx, cy = track.center
+    vx, vy = track.velocity
+    return {
+        "id": track.track_id,
+        "visible": track.visible,
+        "data": track.data,
+        "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
+        "center": [round(cx, 2), round(cy, 2)],
+        "center_norm": [
+            round((cx - width / 2.0) / max(width / 2.0, 1.0), 4),
+            round((cy - height / 2.0) / max(height / 2.0, 1.0), 4),
+        ],
+        "points": [
+            [round(px, 2), round(py, 2)]
+            for px, py in track.points
+        ],
+        "velocity": [round(vx, 2), round(vy, 2)],
+        "age_frames": track.age_frames,
+        "missed_frames": track.missed_frames,
+        "first_seen_seq": track.first_seen_seq,
+        "last_seen_seq": track.last_seen_seq,
+    }
+
+
+def annotate_tracks(frame: np.ndarray, tracks: list[FaceTrack], qr_tracks: list[QRTrack] | None = None) -> tuple[int, int]:
     visible_count = 0
     for track in tracks:
         if track.visible:
@@ -550,7 +806,31 @@ def annotate_tracks(frame: np.ndarray, tracks: list[FaceTrack]) -> int:
             1,
             cv2.LINE_AA,
         )
-    return visible_count
+
+    visible_qr_count = 0
+    for track in qr_tracks or []:
+        if track.visible:
+            visible_qr_count += 1
+        points = np.array(track.points, dtype=np.int32).reshape((-1, 1, 2))
+        color = (255, 190, 0) if track.visible else (0, 160, 255)
+        x, y, w, _h = (int(value) for value in track.smoothed_bbox)
+        label = f"qr:{track.track_id} {track.data[:24]}"
+        cv2.polylines(frame, [points], True, color, 2)
+        cv2.putText(
+            frame, label, (x, max(y - 22, 12)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA,
+        )
+        cx, cy = track.center
+        cv2.drawMarker(
+            frame,
+            (int(cx), int(cy)),
+            color,
+            cv2.MARKER_CROSS,
+            12,
+            1,
+            cv2.LINE_AA,
+        )
+    return visible_count, visible_qr_count
 
 
 def reader_thread(stream, slot: dict, slot_lock: threading.Lock,

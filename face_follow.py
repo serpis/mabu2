@@ -12,13 +12,16 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from camera.face_detect import BOUNDARY, FaceTrack, RpicamFaceTracker, TrackedFaceFrame
+from camera.face_detect import BOUNDARY, FaceTrack, QRTrack, RpicamFaceTracker, TrackedFaceFrame
 from robot_engine import BoardState, PendingGaze, RobotEngine, default_engine_config
 
 
 GAZE_MODE_ANIMATION = "animation_engine"
 GAZE_MODE_DIRECT = "direct_pose"
 GAZE_MODES = {GAZE_MODE_ANIMATION, GAZE_MODE_DIRECT}
+TARGET_MODE_FACES = "faces"
+TARGET_MODE_QR = "qr"
+TARGET_MODES = {TARGET_MODE_FACES, TARGET_MODE_QR}
 
 
 class SharedCameraMjpegServer:
@@ -32,6 +35,7 @@ class SharedCameraMjpegServer:
         idle_blink: bool,
         blink_interval_s: float,
         gaze_mode: str,
+        target_mode: str,
         eyelid_offset: float,
     ) -> None:
         self.camera = camera
@@ -61,6 +65,9 @@ class SharedCameraMjpegServer:
         self.blink_interval_s = blink_interval_s
         self.gaze_lock = threading.Lock()
         self.gaze_mode = gaze_mode
+        self.target_lock = threading.Lock()
+        self.target_mode = target_mode
+        self.camera.set_qr_enabled(target_mode == TARGET_MODE_QR)
         self.expression_lock = threading.Lock()
         self.eyelid_offset = eyelid_offset
         self._save_runtime_settings()
@@ -137,6 +144,7 @@ class SharedCameraMjpegServer:
                         "calibration": calibration,
                         "blink": self._blink_state(),
                         "gaze": self._gaze_state(),
+                        "target_mode": self._target_state(),
                         "expression": self._expression_state(),
                         "settings": self._settings_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
@@ -167,6 +175,14 @@ class SharedCameraMjpegServer:
                 body = self._handle_gaze_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._gaze_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/target"):
+            try:
+                body = self._handle_target_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._target_state()}
             self._send_json(conn, body)
             return
 
@@ -260,6 +276,10 @@ class SharedCameraMjpegServer:
         with self.gaze_lock:
             return self.gaze_mode
 
+    def target_mode_snapshot(self) -> str:
+        with self.target_lock:
+            return self.target_mode
+
     def expression_state_snapshot(self) -> float:
         with self.expression_lock:
             return self.eyelid_offset
@@ -271,6 +291,8 @@ class SharedCameraMjpegServer:
     def _settings_values(self) -> dict:
         with self.gaze_lock:
             gaze_mode = self.gaze_mode
+        with self.target_lock:
+            target_mode = self.target_mode
         with self.blink_lock:
             idle_blink_enabled = self.idle_blink_enabled
             blink_interval_s = self.blink_interval_s
@@ -278,6 +300,7 @@ class SharedCameraMjpegServer:
             eyelid_offset = self.eyelid_offset
         return {
             "gaze_mode": gaze_mode,
+            "target_mode": target_mode,
             "idle_blink_enabled": idle_blink_enabled,
             "blink_interval_s": blink_interval_s,
             "eyelid_offset": eyelid_offset,
@@ -321,6 +344,34 @@ class SharedCameraMjpegServer:
     def _gaze_state(self) -> dict:
         with self.gaze_lock:
             return {"mode": self.gaze_mode}
+
+    def _target_state(self) -> dict:
+        with self.target_lock:
+            return {"mode": self.target_mode}
+
+    def _handle_target_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._target_state()
+
+        if action == "set":
+            mode = params.get("mode", [None])[0]
+            if mode is None:
+                use_qr = params.get("qr", [None])[0]
+                if use_qr is not None:
+                    mode = TARGET_MODE_QR if use_qr not in {"0", "false", "off", "no"} else TARGET_MODE_FACES
+            if mode not in TARGET_MODES:
+                raise ValueError(f"target mode must be one of: {', '.join(sorted(TARGET_MODES))}")
+            with self.target_lock:
+                self.target_mode = mode
+            self.camera.set_qr_enabled(mode == TARGET_MODE_QR)
+            self._save_runtime_settings()
+            return self._target_state()
+
+        return {"error": f"unknown target action: {action}", **self._target_state()}
 
     def _handle_gaze_request(self, path: str) -> dict:
         parsed = urlsplit(path)
@@ -420,24 +471,37 @@ class SharedCameraMjpegServer:
         with self.debug_lock:
             snapshot = dict(self.debug_snapshot)
         selected_id = snapshot.get("selected_id") or snapshot.get("active_id")
+        selected_kind = snapshot.get("selected_kind") or snapshot.get("active_kind")
         faces = snapshot.get("faces") or []
-        face = None
+        qrs = snapshot.get("qrs") or []
+        item = None
+        item_kind = selected_kind
         if selected_id is not None:
-            face = next((item for item in faces if item.get("id") == selected_id), None)
-        if face is None and faces:
-            face = faces[0]
-        if face is None:
-            raise ValueError("no face available to record")
+            source_items = qrs if selected_kind == TARGET_MODE_QR else faces
+            item = next((entry for entry in source_items if entry.get("id") == selected_id), None)
+        if item is None and faces:
+            item = faces[0]
+            item_kind = TARGET_MODE_FACES
+        if item is None and qrs:
+            item = qrs[0]
+            item_kind = TARGET_MODE_QR
+        if item is None:
+            raise ValueError("no target available to record")
 
         point = {
             "timestamp": time.time(),
             "frame_seq": snapshot.get("frame_seq"),
-            "face_id": face.get("id"),
-            "eye_center": face.get("eye_center") or face.get("center"),
-            "eye_center_norm": face.get("eye_center_norm") or face.get("center_norm"),
-            "face_center": face.get("center"),
-            "face_center_norm": face.get("center_norm"),
-            "bbox": face.get("bbox"),
+            "target_kind": item_kind,
+            "target_id": item.get("id"),
+            "qr_data": item.get("data") if item_kind == TARGET_MODE_QR else None,
+            "face_id": item.get("id") if item_kind == TARGET_MODE_FACES else None,
+            "eye_center": item.get("eye_center") or item.get("center"),
+            "eye_center_norm": item.get("eye_center_norm") or item.get("center_norm"),
+            "face_center": item.get("center") if item_kind == TARGET_MODE_FACES else None,
+            "face_center_norm": item.get("center_norm") if item_kind == TARGET_MODE_FACES else None,
+            "center": item.get("center"),
+            "center_norm": item.get("center_norm"),
+            "bbox": item.get("bbox"),
             "yaw": yaw,
             "pitch": pitch,
         }
@@ -527,6 +591,11 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">target source</div><div class="v" id="targetSource">-</div></div>
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
     <div class="panel">
+      <h1>Target</h1>
+      <label><input id="qrTarget" type="checkbox"> Look at QR codes</label>
+      <div class="row"><div class="k">mode</div><div class="v" id="targetMode">-</div></div>
+    </div>
+    <div class="panel">
       <h1>Gaze Output</h1>
       <label><input id="animationGaze" type="checkbox" checked> Animation engine</label>
       <div class="row"><div class="k">mode</div><div class="v" id="gazeMode">-</div></div>
@@ -577,6 +646,7 @@ function renderPiTemp(value){
   else if(value >= 65) status.classList.add("warm");
 }
 const manualMode=document.getElementById("manualMode");
+const qrTarget=document.getElementById("qrTarget");
 const animationGaze=document.getElementById("animationGaze");
 const eyelidOffset=document.getElementById("eyelidOffset");
 const idleBlink=document.getElementById("idleBlink");
@@ -631,6 +701,18 @@ function renderGaze(g){
   animationGaze.checked=g.mode !== "direct_pose";
   document.getElementById("gazeMode").textContent=g.mode || "-";
 }
+async function target(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/target?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderTarget(d);
+  return d;
+}
+function renderTarget(t){
+  if(!t)return;
+  qrTarget.checked=t.mode === "qr";
+  document.getElementById("targetMode").textContent=t.mode || "-";
+}
 async function expression(action, extra={}){
   const p=new URLSearchParams({action, ...extra});
   const r=await fetch(`/expression?${p}`,{cache:"no-store"});
@@ -677,7 +759,7 @@ async function tick(){
     const r=await fetch("/debug",{cache:"no-store"});
     const d=await r.json();
     document.getElementById("state").textContent=d.state || "-";
-    document.getElementById("frame").textContent=`seq=${d.frame_seq ?? "-"} faces=${d.visible_faces ?? 0}/${d.detections ?? 0}`;
+    document.getElementById("frame").textContent=`seq=${d.frame_seq ?? "-"} faces=${d.visible_faces ?? 0}/${d.detections ?? 0} qr=${d.visible_qrs ?? 0}/${d.qr_detections ?? 0}`;
     document.getElementById("age").textContent=fmt(d.frame_age_ms);
     document.getElementById("processMs").textContent=fmt(d.processing_ms);
     document.getElementById("active").textContent=`active=${d.active_id ?? "-"} selected=${d.selected_id ?? "-"}`;
@@ -685,6 +767,7 @@ async function tick(){
     document.getElementById("targetSource").textContent=d.target_source || "-";
     document.getElementById("sent").textContent=d.sent ? `yes, ${fmt(d.last_sent_age_ms)} ms ago` : `no, ${fmt(d.last_sent_age_ms)} ms ago`;
     renderPiTemp(d.pi_temperature_c);
+    renderTarget(d.target_mode);
     renderGaze(d.gaze);
     renderExpression(d.expression);
     renderBlink(d.blink);
@@ -694,6 +777,7 @@ async function tick(){
     document.getElementById("state").textContent="debug fetch failed";
   }
 }
+qrTarget.addEventListener("change",()=>target("set",{mode:qrTarget.checked ? "qr" : "faces"}));
 animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.checked ? "animation_engine" : "direct_pose"}));
 eyelidOffset.addEventListener("change",()=>expression("set",expressionValues()));
 idleBlink.addEventListener("change",()=>blink("set",blinkValues()));
@@ -741,6 +825,11 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(GAZE_MODES),
         default=GAZE_MODE_ANIMATION,
     )
+    parser.add_argument(
+        "--target-mode",
+        choices=sorted(TARGET_MODES),
+        default=TARGET_MODE_FACES,
+    )
     parser.add_argument("--gaze-ms", type=float, default=350.0)
     parser.add_argument("--gaze-sample-ms", type=float, default=50.0)
     parser.add_argument("--gaze-blink-threshold", type=float, default=999.0)
@@ -781,6 +870,12 @@ def apply_runtime_settings(args: argparse.Namespace) -> None:
         if gaze_mode not in GAZE_MODES:
             raise ValueError(f"settings gaze_mode must be one of: {', '.join(sorted(GAZE_MODES))}")
         args.gaze_mode = gaze_mode
+
+    target_mode = settings.get("target_mode")
+    if target_mode is not None:
+        if target_mode not in TARGET_MODES:
+            raise ValueError(f"settings target_mode must be one of: {', '.join(sorted(TARGET_MODES))}")
+        args.target_mode = target_mode
 
     idle_blink_enabled = settings.get("idle_blink_enabled")
     if idle_blink_enabled is not None:
@@ -853,6 +948,48 @@ def choose_face(frame: TrackedFaceFrame, active_id: int | None) -> FaceTrack | N
     return max(visible, key=score)
 
 
+def choose_qr(frame: TrackedFaceFrame, active_id: int | None) -> QRTrack | None:
+    visible = frame.visible_qr_tracks
+    if not visible:
+        return None
+
+    if active_id is not None:
+        for qr in visible:
+            if qr.track_id == active_id:
+                return qr
+
+    cx = frame.width / 2.0
+    cy = frame.height / 2.0
+
+    def score(qr: QRTrack) -> float:
+        x, y, w, h = qr.smoothed_bbox
+        qx, qy = qr.center
+        distance = math.hypot((qx - cx) / frame.width, (qy - cy) / frame.height)
+        area = (w * h) / max(frame.width * frame.height, 1)
+        return area * 3.0 - distance * 0.8
+
+    return max(visible, key=score)
+
+
+def frame_point_to_gaze(
+    point: tuple[float, float],
+    frame: TrackedFaceFrame,
+    *,
+    horizontal_fov: float,
+    vertical_fov: float,
+    yaw_scale: float,
+    pitch_scale: float,
+    max_yaw: float,
+    max_pitch: float,
+) -> tuple[float, float]:
+    cx, cy = point
+    norm_x = (cx - frame.width / 2.0) / max(frame.width / 2.0, 1.0)
+    norm_y = (cy - frame.height / 2.0) / max(frame.height / 2.0, 1.0)
+    yaw = norm_x * horizontal_fov * 0.5 * yaw_scale
+    pitch = -norm_y * vertical_fov * 0.5 * pitch_scale
+    return clamp(yaw, -max_yaw, max_yaw), clamp(pitch, -max_pitch, max_pitch)
+
+
 def face_to_gaze(
     face: FaceTrack,
     frame: TrackedFaceFrame,
@@ -864,16 +1001,20 @@ def face_to_gaze(
     max_yaw: float,
     max_pitch: float,
 ) -> tuple[float, float]:
-    cx, cy = face.eye_center
-    norm_x = (cx - frame.width / 2.0) / max(frame.width / 2.0, 1.0)
-    norm_y = (cy - frame.height / 2.0) / max(frame.height / 2.0, 1.0)
-    yaw = norm_x * horizontal_fov * 0.5 * yaw_scale
-    pitch = -norm_y * vertical_fov * 0.5 * pitch_scale
-    return clamp(yaw, -max_yaw, max_yaw), clamp(pitch, -max_pitch, max_pitch)
+    return frame_point_to_gaze(
+        face.eye_center,
+        frame,
+        horizontal_fov=horizontal_fov,
+        vertical_fov=vertical_fov,
+        yaw_scale=yaw_scale,
+        pitch_scale=pitch_scale,
+        max_yaw=max_yaw,
+        max_pitch=max_pitch,
+    )
 
 
-def calibrated_frame_face_to_gaze(
-    face: FaceTrack,
+def calibrated_frame_point_to_gaze(
+    image_point: tuple[float, float],
     frame: TrackedFaceFrame,
     calibration_points: list[dict],
     *,
@@ -899,7 +1040,7 @@ def calibrated_frame_face_to_gaze(
     if len(usable) < 2:
         return fallback, "fov_fallback"
 
-    ex, ey = face.eye_center
+    ex, ey = image_point
     nx = (ex - frame.width / 2.0) / max(frame.width / 2.0, 1.0)
     ny = (ey - frame.height / 2.0) / max(frame.height / 2.0, 1.0)
     ranked = sorted(
@@ -930,6 +1071,27 @@ def calibrated_frame_face_to_gaze(
         clamp(weighted_yaw / total_weight, -max_yaw, max_yaw),
         clamp(weighted_pitch / total_weight, -max_pitch, max_pitch),
     ), f"calibrated_idw_{len(nearest)}"
+
+
+def calibrated_frame_face_to_gaze(
+    face: FaceTrack,
+    frame: TrackedFaceFrame,
+    calibration_points: list[dict],
+    *,
+    fallback: tuple[float, float],
+    max_yaw: float,
+    max_pitch: float,
+    neighbors: int = 4,
+) -> tuple[tuple[float, float], str]:
+    return calibrated_frame_point_to_gaze(
+        face.eye_center,
+        frame,
+        calibration_points,
+        fallback=fallback,
+        max_yaw=max_yaw,
+        max_pitch=max_pitch,
+        neighbors=neighbors,
+    )
 
 
 def should_send(
@@ -1030,23 +1192,25 @@ def debug_snapshot(
     frame: TrackedFaceFrame,
     engine: RobotEngine,
     active_id: int | None,
-    face: FaceTrack | None,
+    active_kind: str | None,
+    selected_id: int | None,
+    selected_kind: str | None,
     target: tuple[float, float] | None,
     target_source: str,
+    target_mode: str,
     gaze_mode: str,
     sent: bool,
     last_sent_at: float,
     send_hz: float,
     min_angle_delta: float,
 ) -> dict:
-    selected_id = face.track_id if face is not None else None
     target_dict = None
     if target is not None:
         yaw, pitch = target
         target_dict = {"yaw": round(yaw, 3), "pitch": round(pitch, 3)}
     frame_dict = frame.as_dict()
     return {
-        "state": "tracking" if face is not None else "no_visible_face",
+        "state": "tracking" if selected_id is not None else "no_visible_target",
         "frame_seq": frame.seq,
         "frame_timestamp": frame.timestamp,
         "frame_monotonic_timestamp": frame.monotonic_timestamp,
@@ -1054,16 +1218,21 @@ def debug_snapshot(
         "width": frame.width,
         "height": frame.height,
         "detections": frame.detections,
+        "qr_detections": frame.qr_detections,
         "processing_ms": (
             round(frame.processing_ms, 2)
             if frame.processing_ms is not None
             else None
         ),
         "visible_faces": len(frame.visible_tracks),
+        "visible_qrs": len(frame.visible_qr_tracks),
         "active_id": active_id,
+        "active_kind": active_kind,
         "selected_id": selected_id,
+        "selected_kind": selected_kind,
         "target": target_dict,
         "target_source": target_source,
+        "target_mode": target_mode,
         "gaze_mode": gaze_mode,
         "engine_state": engine.state.value,
         "engine_timeline_gazes": len(engine.gaze_events),
@@ -1078,6 +1247,7 @@ def debug_snapshot(
         "send_hz": send_hz,
         "min_angle_delta": min_angle_delta,
         "faces": frame_dict["faces"],
+        "qrs": frame_dict["qrs"],
     }
 
 
@@ -1104,6 +1274,8 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--loop-sleep must be >= 0")
     if args.mjpeg_port < 0:
         raise ValueError("--mjpeg-port must be >= 0")
+    if args.target_mode not in TARGET_MODES:
+        raise ValueError(f"--target-mode must be one of: {', '.join(sorted(TARGET_MODES))}")
 
     engine = RobotEngine(
         default_engine_config(
@@ -1137,10 +1309,12 @@ def run(args: argparse.Namespace) -> int:
         idle_blink=args.idle_blink,
         blink_interval_s=args.blink_interval,
         gaze_mode=args.gaze_mode,
+        target_mode=args.target_mode,
         eyelid_offset=args.eyelid_offset,
     )
 
-    active_id: int | None = None
+    active_face_id: int | None = None
+    active_qr_id: int | None = None
     last_sent_at = 0.0
     last_target: tuple[float, float] | None = None
     send_interval = 1.0 / args.send_hz
@@ -1177,6 +1351,7 @@ def run(args: argparse.Namespace) -> int:
             )
             engine.maybe_start_next()
             gaze_mode = mjpeg_server.gaze_mode_snapshot()
+            target_mode = mjpeg_server.target_mode_snapshot()
 
             manual_target = mjpeg_server.pop_pending_manual_gaze()
             if manual_target is not None:
@@ -1193,19 +1368,37 @@ def run(args: argparse.Namespace) -> int:
                 frame = camera.get_latest()
                 if frame is None:
                     continue
-                face = choose_face(frame, active_id)
+                target_track: FaceTrack | QRTrack | None
+                selected_kind: str | None
+                if target_mode == TARGET_MODE_QR:
+                    target_track = choose_qr(frame, active_qr_id)
+                    selected_kind = TARGET_MODE_QR if target_track is not None else None
+                else:
+                    target_track = choose_face(frame, active_face_id)
+                    selected_kind = TARGET_MODE_FACES if target_track is not None else None
                 target = None
                 target_source = "none"
                 sent = False
-                if face is None:
-                    active_id = None
+                if target_track is None:
+                    if target_mode == TARGET_MODE_QR:
+                        active_qr_id = None
+                    else:
+                        active_face_id = None
                 elif mjpeg_server.is_calibration_enabled():
-                    active_id = face.track_id
+                    if target_mode == TARGET_MODE_QR:
+                        active_qr_id = target_track.track_id
+                    else:
+                        active_face_id = target_track.track_id
                     target_source = "manual_calibration"
                 else:
-                    active_id = face.track_id
-                    fallback = face_to_gaze(
-                        face,
+                    if target_mode == TARGET_MODE_QR:
+                        active_qr_id = target_track.track_id
+                        image_point = target_track.center
+                    else:
+                        active_face_id = target_track.track_id
+                        image_point = target_track.eye_center
+                    fallback = frame_point_to_gaze(
+                        image_point,
                         frame,
                         horizontal_fov=args.horizontal_fov,
                         vertical_fov=args.vertical_fov,
@@ -1214,14 +1407,15 @@ def run(args: argparse.Namespace) -> int:
                         max_yaw=args.max_yaw,
                         max_pitch=args.max_pitch,
                     )
-                    target, target_source = calibrated_frame_face_to_gaze(
-                        face,
+                    target, target_source = calibrated_frame_point_to_gaze(
+                        image_point,
                         frame,
                         mjpeg_server.calibration_points_snapshot(),
                         fallback=fallback,
                         max_yaw=args.max_yaw,
                         max_pitch=args.max_pitch,
                     )
+                    target_source = f"{target_mode}_{target_source}"
                     if should_send(
                         now,
                         target,
@@ -1241,19 +1435,24 @@ def run(args: argparse.Namespace) -> int:
                         if args.verbose:
                             yaw, pitch = target
                             print(
-                                f"track={active_id} yaw={yaw:.1f} pitch={pitch:.1f} "
+                                f"{target_mode}_track={target_track.track_id} yaw={yaw:.1f} pitch={pitch:.1f} "
                                 f"seq={frame.seq}",
                                 flush=True,
                             )
+                active_id = active_qr_id if target_mode == TARGET_MODE_QR else active_face_id
+                selected_id = target_track.track_id if target_track is not None else None
                 mjpeg_server.set_debug(
                     debug_snapshot(
                         now=now,
                         frame=frame,
                         engine=engine,
                         active_id=active_id,
-                        face=face,
+                        active_kind=target_mode if active_id is not None else None,
+                        selected_id=selected_id,
+                        selected_kind=selected_kind,
                         target=target,
                         target_source=target_source,
+                        target_mode=target_mode,
                         gaze_mode=gaze_mode,
                         sent=sent,
                         last_sent_at=last_sent_at,
