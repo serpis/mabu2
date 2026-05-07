@@ -25,11 +25,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-try:
-    import zxingcpp
-except ImportError:
-    zxingcpp = None
-
 MODEL_URL = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/"
     "face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -51,9 +46,13 @@ class FaceDetection:
 
 
 @dataclass
-class QRDetection:
-    data: str
+class MarkerDetection:
+    marker_id: int
     points: tuple[tuple[float, float], ...]
+
+    @property
+    def data(self) -> str:
+        return str(self.marker_id)
 
     @property
     def bbox(self) -> tuple[float, float, float, float]:
@@ -139,7 +138,7 @@ class FaceTrack:
 
 
 @dataclass
-class QRTrack:
+class MarkerTrack:
     track_id: int
     data: str
     points: tuple[tuple[float, float], ...]
@@ -158,7 +157,7 @@ class QRTrack:
         x, y, w, h = self.smoothed_bbox
         return x + w / 2.0, y + h / 2.0
 
-    def update(self, detection: QRDetection, seq: int, smoothing: float) -> None:
+    def update(self, detection: MarkerDetection, seq: int, smoothing: float) -> None:
         old_center = self.center
         sx, sy, sw, sh = self.smoothed_bbox
         x, y, w, h = detection.bbox
@@ -201,8 +200,8 @@ class TrackedFaceFrame:
     height: int
     detections: int
     tracks: tuple[FaceTrack, ...]
-    qr_detections: int
-    qr_tracks: tuple[QRTrack, ...]
+    marker_detections: int
+    marker_tracks: tuple[MarkerTrack, ...]
     processing_ms: float | None = None
 
     @property
@@ -210,8 +209,8 @@ class TrackedFaceFrame:
         return tuple(track for track in self.tracks if track.visible)
 
     @property
-    def visible_qr_tracks(self) -> tuple[QRTrack, ...]:
-        return tuple(track for track in self.qr_tracks if track.visible)
+    def visible_marker_tracks(self) -> tuple[MarkerTrack, ...]:
+        return tuple(track for track in self.marker_tracks if track.visible)
 
     def as_dict(self) -> dict:
         return {
@@ -223,10 +222,10 @@ class TrackedFaceFrame:
             "detections": self.detections,
             "processing_ms": self.processing_ms,
             "visible_faces": len(self.visible_tracks),
-            "qr_detections": self.qr_detections,
-            "visible_qrs": len(self.visible_qr_tracks),
+            "marker_detections": self.marker_detections,
+            "visible_markers": len(self.visible_marker_tracks),
             "faces": [track_to_dict(track, (self.width, self.height)) for track in self.tracks],
-            "qrs": [qr_track_to_dict(track, (self.width, self.height)) for track in self.qr_tracks],
+            "markers": [marker_track_to_dict(track, (self.width, self.height)) for track in self.marker_tracks],
         }
 
 
@@ -312,7 +311,7 @@ class GreedyFaceTracker:
         return distance * 2.0 + iou_penalty * 0.4 + size_penalty * 0.2
 
 
-class GreedyQRTracker:
+class GreedyMarkerTracker:
     def __init__(
         self,
         *,
@@ -324,15 +323,15 @@ class GreedyQRTracker:
         self.max_match_distance = max_match_distance
         self.smoothing = min(max(smoothing, 0.0), 0.95)
         self.next_track_id = 1
-        self.tracks: list[QRTrack] = []
+        self.tracks: list[MarkerTrack] = []
 
     def update(
         self,
-        detections: list[QRDetection],
+        detections: list[MarkerDetection],
         *,
         seq: int,
         image_size: tuple[int, int],
-    ) -> list[QRTrack]:
+    ) -> list[MarkerTrack]:
         active_tracks = [track for track in self.tracks if track.missed_frames <= self.max_missed_frames]
         pairs: list[tuple[float, int, int]] = []
         for track_i, track in enumerate(active_tracks):
@@ -358,7 +357,7 @@ class GreedyQRTracker:
         for detection_i, detection in enumerate(detections):
             if detection_i in matched_detections:
                 continue
-            track = QRTrack(
+            track = MarkerTrack(
                 track_id=self.next_track_id,
                 data=detection.data,
                 points=detection.points,
@@ -379,8 +378,8 @@ class GreedyQRTracker:
 
     def match_cost(
         self,
-        track: QRTrack,
-        detection: QRDetection,
+        track: MarkerTrack,
+        detection: MarkerDetection,
         image_size: tuple[int, int],
     ) -> float:
         if track.data and detection.data and track.data != detection.data:
@@ -428,8 +427,10 @@ class FaceTrackingPipeline:
             max_match_distance=max_match_distance,
             smoothing=smoothing,
         )
-        self.qr_detector = cv2.QRCodeDetector()
-        self.qr_tracker = GreedyQRTracker(
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+        parameters = cv2.aruco.DetectorParameters()
+        self.marker_detector = cv2.aruco.ArucoDetector(dictionary, parameters)
+        self.marker_tracker = GreedyMarkerTracker(
             max_missed_frames=max_missed_frames,
             max_match_distance=max_match_distance,
             smoothing=smoothing,
@@ -442,7 +443,7 @@ class FaceTrackingPipeline:
         seq: int,
         timestamp: float | None = None,
         monotonic_timestamp: float | None = None,
-        detect_qr: bool = True,
+        enable_marker_detection: bool = True,
     ) -> TrackedFaceFrame:
         started_at = time.monotonic()
         height, width = frame.shape[:2]
@@ -452,8 +453,16 @@ class FaceTrackingPipeline:
         _, faces = self.detector.detect(frame)
         detections = detections_from_yunet(faces)
         tracks = self.tracker.update(detections, seq=seq, image_size=(width, height))
-        qr_detections = detect_qr_codes(self.qr_detector, frame) if detect_qr else []
-        qr_tracks = self.qr_tracker.update(qr_detections, seq=seq, image_size=(width, height))
+        marker_detections = (
+            detect_markers(self.marker_detector, frame)
+            if enable_marker_detection
+            else []
+        )
+        marker_tracks = self.marker_tracker.update(
+            marker_detections,
+            seq=seq,
+            image_size=(width, height),
+        )
         processing_ms = (time.monotonic() - started_at) * 1000.0
         return TrackedFaceFrame(
             seq=seq,
@@ -465,8 +474,8 @@ class FaceTrackingPipeline:
             height=height,
             detections=len(detections),
             tracks=tuple(tracks),
-            qr_detections=len(qr_detections),
-            qr_tracks=tuple(qr_tracks),
+            marker_detections=len(marker_detections),
+            marker_tracks=tuple(marker_tracks),
             processing_ms=processing_ms,
         )
 
@@ -485,14 +494,14 @@ class RpicamFaceTracker:
         max_match_distance: float = 0.7,
         smoothing: float = 0.65,
         debug_jpeg_quality: int | None = None,
-        qr_enabled: bool = False,
+        marker_enabled: bool = False,
     ) -> None:
         self.width = width
         self.height = height
         self.fps = fps
         self.debug_jpeg_quality = debug_jpeg_quality
-        self._qr_enabled = qr_enabled
-        self._qr_enabled_lock = threading.Lock()
+        self._marker_enabled = marker_enabled
+        self._marker_enabled_lock = threading.Lock()
         self.pipeline = FaceTrackingPipeline(
             width=width,
             height=height,
@@ -578,13 +587,13 @@ class RpicamFaceTracker:
                 return None
             return self._latest_jpeg, self._latest_frame.seq
 
-    def set_qr_enabled(self, enabled: bool) -> None:
-        with self._qr_enabled_lock:
-            self._qr_enabled = enabled
+    def set_marker_enabled(self, enabled: bool) -> None:
+        with self._marker_enabled_lock:
+            self._marker_enabled = enabled
 
-    def is_qr_enabled(self) -> bool:
-        with self._qr_enabled_lock:
-            return self._qr_enabled
+    def is_marker_enabled(self) -> bool:
+        with self._marker_enabled_lock:
+            return self._marker_enabled
 
     def _process_loop(self) -> None:
         encode_params = (
@@ -609,23 +618,23 @@ class RpicamFaceTracker:
             if frame is None:
                 continue
 
-            detect_qr = self.is_qr_enabled()
+            enable_marker_detection = self.is_marker_enabled()
             tracked_frame = self.pipeline.process_frame(
                 frame,
                 seq=seq,
                 timestamp=timestamp,
                 monotonic_timestamp=monotonic_timestamp,
-                detect_qr=detect_qr,
+                enable_marker_detection=enable_marker_detection,
             )
             debug_jpeg = None
             if encode_params is not None:
-                visible_faces, visible_qrs = annotate_tracks(
+                visible_faces, visible_markers = annotate_tracks(
                     frame,
                     list(tracked_frame.tracks),
-                    list(tracked_frame.qr_tracks),
+                    list(tracked_frame.marker_tracks),
                 )
                 cv2.putText(
-                    frame, f"faces: {visible_faces} qr: {visible_qrs}", (8, 22),
+                    frame, f"faces: {visible_faces} markers: {visible_markers}", (8, 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA,
                 )
                 ok, enc = cv2.imencode(".jpg", frame, encode_params)
@@ -691,135 +700,23 @@ def detections_from_yunet(faces: np.ndarray | None) -> list[FaceDetection]:
     return detections
 
 
-def detect_qr_codes(detector: cv2.QRCodeDetector, frame: np.ndarray) -> list[QRDetection]:
-    zxing_detections = detect_qr_codes_zxing(frame)
-    if zxing_detections:
-        return zxing_detections
-
-    detections: list[QRDetection] = []
+def detect_markers(detector: cv2.aruco.ArucoDetector, frame: np.ndarray) -> list[MarkerDetection]:
     try:
-        ok, decoded_info, points, _straight = detector.detectAndDecodeMulti(frame)
+        corners, ids, _rejected = detector.detectMarkers(frame)
     except cv2.error:
-        ok, decoded_info, points = False, (), None
-
-    if ok and points is not None:
-        for data, qr_points in zip(decoded_info, points):
-            point_tuple = tuple(
-                (float(point[0]), float(point[1]))
-                for point in qr_points
-            )
-            if len(point_tuple) >= 4:
-                decoded = str(data) or decode_qr_from_quad(detector, frame, point_tuple)
-                if decoded:
-                    detections.append(QRDetection(data=decoded, points=point_tuple))
-        return detections
-
-    try:
-        data, points, _straight = detector.detectAndDecode(frame)
-    except cv2.error:
-        return detections
-    if points is None:
-        return detections
-
-    point_array = points.reshape(-1, 2)
-    point_tuple = tuple((float(point[0]), float(point[1])) for point in point_array)
-    if len(point_tuple) >= 4:
-        decoded = str(data) or decode_qr_from_quad(detector, frame, point_tuple)
-        if decoded:
-            detections.append(QRDetection(data=decoded, points=point_tuple))
-    return detections
-
-
-def detect_qr_codes_zxing(frame: np.ndarray) -> list[QRDetection]:
-    if zxingcpp is None:
+        return []
+    if ids is None:
         return []
 
-    for scale in (1.0, 2.0):
-        image = (
-            cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-            if scale != 1.0
-            else frame
+    detections: list[MarkerDetection] = []
+    for marker_corners, marker_id in zip(corners, ids.flatten()):
+        points = tuple(
+            (float(point[0]), float(point[1]))
+            for point in marker_corners.reshape(-1, 2)
         )
-        try:
-            barcodes = zxingcpp.read_barcodes(image)
-        except Exception:
-            continue
-
-        detections: list[QRDetection] = []
-        for barcode in barcodes:
-            if "QRCode" not in str(barcode.format) or not barcode.text:
-                continue
-            position = barcode.position
-            points = (
-                (float(position.top_left.x) / scale, float(position.top_left.y) / scale),
-                (float(position.top_right.x) / scale, float(position.top_right.y) / scale),
-                (float(position.bottom_right.x) / scale, float(position.bottom_right.y) / scale),
-                (float(position.bottom_left.x) / scale, float(position.bottom_left.y) / scale),
-            )
-            detections.append(QRDetection(data=str(barcode.text), points=points))
-        if detections:
-            return detections
-    return []
-
-
-def decode_qr_from_quad(
-    detector: cv2.QRCodeDetector,
-    frame: np.ndarray,
-    points: tuple[tuple[float, float], ...],
-) -> str:
-    if len(points) < 4:
-        return ""
-
-    quad = order_quad_points(np.array(points[:4], dtype=np.float32))
-    side = int(
-        max(
-            np.linalg.norm(quad[0] - quad[1]),
-            np.linalg.norm(quad[1] - quad[2]),
-            np.linalg.norm(quad[2] - quad[3]),
-            np.linalg.norm(quad[3] - quad[0]),
-        )
-    )
-    side = max(160, min(512, side))
-    dst = np.array(
-        [[0, 0], [side - 1, 0], [side - 1, side - 1], [0, side - 1]],
-        dtype=np.float32,
-    )
-    transform = cv2.getPerspectiveTransform(quad, dst)
-    warped = cv2.warpPerspective(frame, transform, (side, side))
-    gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    for candidate in (
-        cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR),
-        cv2.copyMakeBorder(
-            cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR),
-            24,
-            24,
-            24,
-            24,
-            cv2.BORDER_CONSTANT,
-            value=(255, 255, 255),
-        ),
-        cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR),
-    ):
-        try:
-            decoded, _points, _straight = detector.detectAndDecode(candidate)
-        except cv2.error:
-            continue
-        if decoded:
-            return str(decoded)
-    return ""
-
-
-def order_quad_points(points: np.ndarray) -> np.ndarray:
-    ordered = np.zeros((4, 2), dtype=np.float32)
-    sums = points.sum(axis=1)
-    diffs = np.diff(points, axis=1).reshape(-1)
-    ordered[0] = points[np.argmin(sums)]
-    ordered[2] = points[np.argmax(sums)]
-    ordered[1] = points[np.argmin(diffs)]
-    ordered[3] = points[np.argmax(diffs)]
-    return ordered
+        if len(points) == 4:
+            detections.append(MarkerDetection(marker_id=int(marker_id), points=points))
+    return detections
 
 
 def track_to_dict(track: FaceTrack, image_size: tuple[int, int]) -> dict:
@@ -855,7 +752,7 @@ def track_to_dict(track: FaceTrack, image_size: tuple[int, int]) -> dict:
     }
 
 
-def qr_track_to_dict(track: QRTrack, image_size: tuple[int, int]) -> dict:
+def marker_track_to_dict(track: MarkerTrack, image_size: tuple[int, int]) -> dict:
     width, height = image_size
     x, y, w, h = track.smoothed_bbox
     cx, cy = track.center
@@ -863,6 +760,7 @@ def qr_track_to_dict(track: QRTrack, image_size: tuple[int, int]) -> dict:
     return {
         "id": track.track_id,
         "visible": track.visible,
+        "marker_id": int(track.data),
         "data": track.data,
         "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
         "center": [round(cx, 2), round(cy, 2)],
@@ -882,7 +780,11 @@ def qr_track_to_dict(track: QRTrack, image_size: tuple[int, int]) -> dict:
     }
 
 
-def annotate_tracks(frame: np.ndarray, tracks: list[FaceTrack], qr_tracks: list[QRTrack] | None = None) -> tuple[int, int]:
+def annotate_tracks(
+    frame: np.ndarray,
+    tracks: list[FaceTrack],
+    marker_tracks: list[MarkerTrack] | None = None,
+) -> tuple[int, int]:
     visible_count = 0
     for track in tracks:
         if track.visible:
@@ -910,14 +812,14 @@ def annotate_tracks(frame: np.ndarray, tracks: list[FaceTrack], qr_tracks: list[
             cv2.LINE_AA,
         )
 
-    visible_qr_count = 0
-    for track in qr_tracks or []:
+    visible_marker_count = 0
+    for track in marker_tracks or []:
         if track.visible:
-            visible_qr_count += 1
+            visible_marker_count += 1
         points = np.array(track.points, dtype=np.int32).reshape((-1, 1, 2))
         color = (255, 190, 0) if track.visible else (0, 160, 255)
         x, y, w, _h = (int(value) for value in track.smoothed_bbox)
-        label = f"qr:{track.track_id} {track.data[:24]}"
+        label = f"marker:{track.data} track:{track.track_id}"
         cv2.polylines(frame, [points], True, color, 2)
         cv2.putText(
             frame, label, (x, max(y - 22, 12)),
@@ -933,7 +835,7 @@ def annotate_tracks(frame: np.ndarray, tracks: list[FaceTrack], qr_tracks: list[
             1,
             cv2.LINE_AA,
         )
-    return visible_count, visible_qr_count
+    return visible_count, visible_marker_count
 
 
 def reader_thread(stream, slot: dict, slot_lock: threading.Lock,
