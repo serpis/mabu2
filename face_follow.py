@@ -360,7 +360,7 @@ class SharedCameraMjpegServer:
         if action == "set":
             mode = params.get("mode", [None])[0]
             if mode is None:
-                use_markers = params.get("markers", params.get("qr", [None]))[0]
+                use_markers = params.get("markers", [None])[0]
                 if use_markers is not None:
                     mode = (
                         TARGET_MODE_MARKERS
@@ -878,8 +878,6 @@ def apply_runtime_settings(args: argparse.Namespace) -> None:
 
     target_mode = settings.get("target_mode")
     if target_mode is not None:
-        if target_mode == "qr":
-            target_mode = TARGET_MODE_MARKERS
         if target_mode not in TARGET_MODES:
             raise ValueError(f"settings target_mode must be one of: {', '.join(sorted(TARGET_MODES))}")
         args.target_mode = target_mode
@@ -961,17 +959,17 @@ def choose_marker(frame: TrackedFaceFrame, active_id: int | None) -> MarkerTrack
         return None
 
     if active_id is not None:
-        for qr in visible:
-            if qr.track_id == active_id:
-                return qr
+        for marker in visible:
+            if marker.track_id == active_id:
+                return marker
 
     cx = frame.width / 2.0
     cy = frame.height / 2.0
 
-    def score(qr: MarkerTrack) -> float:
-        x, y, w, h = qr.smoothed_bbox
-        qx, qy = qr.center
-        distance = math.hypot((qx - cx) / frame.width, (qy - cy) / frame.height)
+    def score(marker: MarkerTrack) -> float:
+        x, y, w, h = marker.smoothed_bbox
+        mx, my = marker.center
+        distance = math.hypot((mx - cx) / frame.width, (my - cy) / frame.height)
         area = (w * h) / max(frame.width * frame.height, 1)
         return area * 3.0 - distance * 0.8
 
