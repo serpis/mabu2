@@ -1,0 +1,20 @@
+[Unit]
+Description=Robot face follow and debug dashboard
+After=multi-user.target
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/pi/face-follow.env
+ExecStart=/bin/sh -c 'exec /usr/bin/python3 /home/pi/face_follow.py ${FACE_FOLLOW_ARGS:-}'
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

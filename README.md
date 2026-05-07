@@ -126,3 +126,34 @@ Robotens UART-protokoll och rörelseverktyg dokumenteras i `ROBOT_MOTION.md`,
 
 Eye-servo-benchmark och senaste `eye_updown` PID-tuning finns i
 `EYE_PID_TUNING.md`.
+
+## Face follow vid boot
+
+`face_follow.py` kan köras som en `systemd`-service på Raspberry Pi:n. Det startar
+både face-follow-loopen och debug-dashboarden på port `8080`.
+
+Installera eller uppdatera servicefilen på Pi:n:
+
+```bash
+rsync -av deploy/ pi@192.168.1.147:/home/pi/deploy/
+ssh -t pi@192.168.1.147 /home/pi/deploy/install_face_follow_service.sh
+```
+
+Service-defaults ligger i `/home/pi/face-follow.env`. Dashboardens runtime-val
+sparas separat i `/home/pi/face_follow_settings.json`, och kalibreringspunkterna
+ligger i `/home/pi/face_follow_calibration.json`.
+
+Vanliga kommandon på Pi:n:
+
+```bash
+sudo systemctl status face-follow.service
+sudo systemctl restart face-follow.service
+sudo systemctl stop face-follow.service
+journalctl -u face-follow.service -n 100 --no-pager
+```
+
+Efter kodändringar från utvecklingsmaskinen:
+
+```bash
+./deploy/update_face_follow_pi.sh
+```
