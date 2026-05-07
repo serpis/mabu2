@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from camera.face_detect import BOUNDARY, FaceTrack, MarkerTrack, RpicamFaceTracker, TrackedFaceFrame
 from robot_engine import BoardState, PendingGaze, RobotEngine, default_engine_config
+from robot_motion import CHANNELS
 
 
 GAZE_MODE_ANIMATION = "animation_engine"
@@ -22,6 +23,18 @@ GAZE_MODES = {GAZE_MODE_ANIMATION, GAZE_MODE_DIRECT}
 TARGET_MODE_FACES = "faces"
 TARGET_MODE_MARKERS = "markers"
 TARGET_MODES = {TARGET_MODE_FACES, TARGET_MODE_MARKERS}
+REACHABLE_YAW_MIN = CHANNELS["neck_rotation"].min_angle + CHANNELS["eye_leftright"].min_angle
+REACHABLE_YAW_MAX = CHANNELS["neck_rotation"].max_angle + CHANNELS["eye_leftright"].max_angle
+REACHABLE_PITCH_MIN = CHANNELS["neck_elevation"].min_angle + CHANNELS["eye_updown"].min_angle
+REACHABLE_PITCH_MAX = CHANNELS["neck_elevation"].max_angle + CHANNELS["eye_updown"].max_angle
+
+
+def clamp_gaze_target(target: tuple[float, float]) -> tuple[float, float]:
+    yaw, pitch = target
+    return (
+        max(REACHABLE_YAW_MIN, min(REACHABLE_YAW_MAX, yaw)),
+        max(REACHABLE_PITCH_MIN, min(REACHABLE_PITCH_MAX, pitch)),
+    )
 
 
 class SharedCameraMjpegServer:
@@ -85,6 +98,11 @@ class SharedCameraMjpegServer:
             target = self.pending_manual_gaze
             self.pending_manual_gaze = None
             return target
+
+    def restore_pending_manual_gaze_if_empty(self, target: tuple[float, float]) -> None:
+        with self.calibration_lock:
+            if self.pending_manual_gaze is None:
+                self.pending_manual_gaze = target
 
     def start(self) -> None:
         if self.port <= 0 or self.thread is not None:
@@ -452,6 +470,7 @@ class SharedCameraMjpegServer:
         if action == "set":
             yaw = float(params.get("yaw", [self.manual_yaw])[0])
             pitch = float(params.get("pitch", [self.manual_pitch])[0])
+            yaw, pitch = clamp_gaze_target((yaw, pitch))
             apply_gaze = params.get("apply", ["0"])[0] in {"1", "true", "yes"}
             with self.calibration_lock:
                 self.manual_yaw = yaw
@@ -464,6 +483,7 @@ class SharedCameraMjpegServer:
         if action == "record":
             yaw = float(params.get("yaw", [self.manual_yaw])[0])
             pitch = float(params.get("pitch", [self.manual_pitch])[0])
+            yaw, pitch = clamp_gaze_target((yaw, pitch))
             point = self._record_calibration_point(yaw, pitch)
             result = self._calibration_state()
             result["recorded"] = point
@@ -1138,6 +1158,7 @@ def schedule_gaze_if_ready(
 ) -> bool:
     if engine.state != BoardState.IDLE or engine.gaze_events:
         return False
+    target = clamp_gaze_target(target)
     yaw, pitch = target
     engine.schedule_gaze(PendingGaze(yaw=yaw, pitch=pitch, dwell_ms=dwell_ms))
     engine.maybe_start_next()
@@ -1147,6 +1168,7 @@ def schedule_gaze_if_ready(
 def send_direct_gaze_if_ready(engine: RobotEngine, target: tuple[float, float]) -> bool:
     if engine.state != BoardState.IDLE:
         return False
+    target = clamp_gaze_target(target)
     engine.send_direct_gaze(*target)
     return True
 
@@ -1158,9 +1180,13 @@ def drive_gaze_if_ready(
     dwell_ms: float,
     gaze_mode: str,
 ) -> bool:
-    if gaze_mode == GAZE_MODE_DIRECT:
-        return send_direct_gaze_if_ready(engine, target)
-    return schedule_gaze_if_ready(engine, target, dwell_ms=dwell_ms)
+    try:
+        if gaze_mode == GAZE_MODE_DIRECT:
+            return send_direct_gaze_if_ready(engine, target)
+        return schedule_gaze_if_ready(engine, target, dwell_ms=dwell_ms)
+    except ValueError as exc:
+        print(f"gaze target rejected: {exc}", flush=True)
+        return False
 
 
 def schedule_blink_if_ready(engine: RobotEngine) -> bool:
@@ -1381,6 +1407,8 @@ def run(args: argparse.Namespace) -> int:
                 ):
                     last_sent_at = now
                     last_target = manual_target
+                else:
+                    mjpeg_server.restore_pending_manual_gaze_if_empty(manual_target)
 
             if camera.has_frame():
                 frame = camera.get_latest()
