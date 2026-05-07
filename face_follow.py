@@ -878,9 +878,8 @@ def apply_runtime_settings(args: argparse.Namespace) -> None:
 
     target_mode = settings.get("target_mode")
     if target_mode is not None:
-        if target_mode not in TARGET_MODES:
-            raise ValueError(f"settings target_mode must be one of: {', '.join(sorted(TARGET_MODES))}")
-        args.target_mode = target_mode
+        if target_mode in TARGET_MODES:
+            args.target_mode = target_mode
 
     idle_blink_enabled = settings.get("idle_blink_enabled")
     if idle_blink_enabled is not None:
