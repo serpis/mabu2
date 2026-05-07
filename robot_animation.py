@@ -378,7 +378,7 @@ class GazeCornersConfig:
     neck_pitch_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["neck_elevation"]
     neck_tilt_max_speed_dps: float = MEASURED_CHANNEL_MAX_SPEED_DPS["neck_tilt"]
     eye_yaw_limit_deg: float = 15.0
-    eye_pitch_limit_deg: float = 10.0
+    eye_pitch_limit_deg: float = 15.0
 
 
 def gaze_animation(points: Sequence[GazePoint], *, name: str = "gaze") -> RobotAnimation:
