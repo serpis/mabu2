@@ -695,28 +695,90 @@ def detect_qr_codes(detector: cv2.QRCodeDetector, frame: np.ndarray) -> list[QRD
 
     if ok and points is not None:
         for data, qr_points in zip(decoded_info, points):
-            if not data:
-                continue
             point_tuple = tuple(
                 (float(point[0]), float(point[1]))
                 for point in qr_points
             )
             if len(point_tuple) >= 4:
-                detections.append(QRDetection(data=str(data), points=point_tuple))
+                decoded = str(data) or decode_qr_from_quad(detector, frame, point_tuple)
+                if decoded:
+                    detections.append(QRDetection(data=decoded, points=point_tuple))
         return detections
 
     try:
         data, points, _straight = detector.detectAndDecode(frame)
     except cv2.error:
         return detections
-    if not data or points is None:
+    if points is None:
         return detections
 
     point_array = points.reshape(-1, 2)
     point_tuple = tuple((float(point[0]), float(point[1])) for point in point_array)
     if len(point_tuple) >= 4:
-        detections.append(QRDetection(data=str(data), points=point_tuple))
+        decoded = str(data) or decode_qr_from_quad(detector, frame, point_tuple)
+        if decoded:
+            detections.append(QRDetection(data=decoded, points=point_tuple))
     return detections
+
+
+def decode_qr_from_quad(
+    detector: cv2.QRCodeDetector,
+    frame: np.ndarray,
+    points: tuple[tuple[float, float], ...],
+) -> str:
+    if len(points) < 4:
+        return ""
+
+    quad = order_quad_points(np.array(points[:4], dtype=np.float32))
+    side = int(
+        max(
+            np.linalg.norm(quad[0] - quad[1]),
+            np.linalg.norm(quad[1] - quad[2]),
+            np.linalg.norm(quad[2] - quad[3]),
+            np.linalg.norm(quad[3] - quad[0]),
+        )
+    )
+    side = max(160, min(512, side))
+    dst = np.array(
+        [[0, 0], [side - 1, 0], [side - 1, side - 1], [0, side - 1]],
+        dtype=np.float32,
+    )
+    transform = cv2.getPerspectiveTransform(quad, dst)
+    warped = cv2.warpPerspective(frame, transform, (side, side))
+    gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    for candidate in (
+        cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR),
+        cv2.copyMakeBorder(
+            cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR),
+            24,
+            24,
+            24,
+            24,
+            cv2.BORDER_CONSTANT,
+            value=(255, 255, 255),
+        ),
+        cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR),
+    ):
+        try:
+            decoded, _points, _straight = detector.detectAndDecode(candidate)
+        except cv2.error:
+            continue
+        if decoded:
+            return str(decoded)
+    return ""
+
+
+def order_quad_points(points: np.ndarray) -> np.ndarray:
+    ordered = np.zeros((4, 2), dtype=np.float32)
+    sums = points.sum(axis=1)
+    diffs = np.diff(points, axis=1).reshape(-1)
+    ordered[0] = points[np.argmin(sums)]
+    ordered[2] = points[np.argmax(sums)]
+    ordered[1] = points[np.argmin(diffs)]
+    ordered[3] = points[np.argmax(diffs)]
+    return ordered
 
 
 def track_to_dict(track: FaceTrack, image_size: tuple[int, int]) -> dict:
