@@ -469,6 +469,14 @@ class SharedCameraMjpegServer:
             result["recorded"] = point
             return result
 
+        if action == "clear":
+            with self.calibration_lock:
+                self.calibration_points = []
+                self._save_calibration_points_locked()
+            result = self._calibration_state()
+            result["cleared"] = True
+            return result
+
         return {"error": f"unknown calibration action: {action}", **self._calibration_state()}
 
     def _record_calibration_point(self, yaw: float, pitch: float) -> dict:
@@ -628,6 +636,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
       <div class="row"><div class="k">manual pitch</div><div class="v" id="pitchValue">0.0</div></div>
       <div class="controls">
         <button id="apply">Apply gaze</button><button id="record">Record</button>
+        <button id="clearCalibration" class="secondary">Clear points</button>
       </div>
       <div class="row"><div class="k">file</div><div class="v" id="calFile">-</div></div>
       <div class="row"><div class="k">points</div><div class="v" id="calCount">0</div></div>
@@ -795,6 +804,11 @@ gazePad.addEventListener("pointerdown",(ev)=>{
 });
 document.getElementById("apply").addEventListener("click",()=>cal("set",{...manualValues(),apply:"1"}));
 document.getElementById("record").addEventListener("click",()=>cal("record",manualValues()));
+document.getElementById("clearCalibration").addEventListener("click",()=>{
+  if(confirm("\\u00c4r du s\\u00e4ker?")){
+    cal("clear").catch(()=>{});
+  }
+});
 updateManual(0,0);
 setInterval(tick,250);
 tick();
