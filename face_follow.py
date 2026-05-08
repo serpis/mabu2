@@ -1608,11 +1608,9 @@ def schedule_gaze_if_ready(
     *,
     dwell_ms: float,
 ) -> bool:
-    if engine.state != BoardState.IDLE or engine.gaze_events:
-        return False
     target = clamp_gaze_target(target)
     yaw, pitch = target
-    engine.schedule_gaze(PendingGaze(yaw=yaw, pitch=pitch, dwell_ms=dwell_ms))
+    engine.schedule_gaze(PendingGaze(yaw=yaw, pitch=pitch, dwell_ms=dwell_ms), replace_pending=True)
     engine.maybe_start_next()
     return True
 
@@ -1631,9 +1629,13 @@ def drive_gaze_if_ready(
     *,
     dwell_ms: float,
     gaze_mode: str,
+    animation_layers_active: bool = False,
 ) -> bool:
     try:
-        if gaze_mode == GAZE_MODE_DIRECT:
+        has_pending_animation_layers = bool(
+            engine.blink_events or engine.neck_stretch_events or engine.speech_motion_events
+        )
+        if gaze_mode == GAZE_MODE_DIRECT and not animation_layers_active and not has_pending_animation_layers:
             return send_direct_gaze_if_ready(engine, target)
         return schedule_gaze_if_ready(engine, target, dwell_ms=dwell_ms)
     except ValueError as exc:
@@ -1651,10 +1653,17 @@ def schedule_blink_if_ready(engine: RobotEngine) -> bool:
 
 
 def schedule_speech_motion_if_ready(engine: RobotEngine) -> bool:
-    if engine.state != BoardState.IDLE or engine.speech_motion_events:
+    if engine.speech_motion_events:
         return False
     engine.schedule_speech_motion()
     engine.maybe_start_next()
+    return True
+
+
+def cancel_pending_speech_motion(engine: RobotEngine) -> bool:
+    if not engine.speech_motion_events:
+        return False
+    engine.speech_motion_events.clear()
     return True
 
 
@@ -1886,6 +1895,7 @@ def run(args: argparse.Namespace) -> int:
                 mjpeg_server.speech_motion_amplitude_snapshot(),
                 applied_speech_motion_amplitude,
             )
+            sound_running = mjpeg_server.is_sound_running()
             engine.maybe_start_next()
             gaze_mode = mjpeg_server.gaze_mode_snapshot()
             target_mode = mjpeg_server.target_mode_snapshot()
@@ -1897,6 +1907,7 @@ def run(args: argparse.Namespace) -> int:
                     manual_target,
                     dwell_ms=args.gaze_ms,
                     gaze_mode=gaze_mode,
+                    animation_layers_active=sound_running,
                 ):
                     last_sent_at = now
                     last_target = manual_target
@@ -1967,6 +1978,7 @@ def run(args: argparse.Namespace) -> int:
                         target,
                         dwell_ms=args.gaze_ms,
                         gaze_mode=gaze_mode,
+                        animation_layers_active=sound_running,
                     ):
                         last_sent_at = now
                         last_target = target
@@ -2000,8 +2012,10 @@ def run(args: argparse.Namespace) -> int:
                     )
                 )
 
-            if mjpeg_server.is_sound_running():
+            if sound_running:
                 schedule_speech_motion_if_ready(engine)
+            else:
+                cancel_pending_speech_motion(engine)
 
             time.sleep(args.loop_sleep)
     except KeyboardInterrupt:

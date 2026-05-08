@@ -510,6 +510,21 @@ class RobotEngine:
             return self.timeline_speech_motion_end_s(event)
         return self.timeline_blink_end_s(event)
 
+    def timeline_event_duration_s(
+        self,
+        event: TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion,
+    ) -> float:
+        return self.timeline_event_end_s(event) - event.start_s
+
+    def timeline_event_effective_end_s(
+        self,
+        event: TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion,
+        render_start_s: float,
+    ) -> float:
+        if event.start_s <= render_start_s:
+            return render_start_s + self.timeline_event_duration_s(event)
+        return self.timeline_event_end_s(event)
+
     def latest_timeline_end_s(self, *, include_idle_blinks: bool = True) -> float | None:
         events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion] = [
             *self.gaze_events,
@@ -568,9 +583,11 @@ class RobotEngine:
         self.next_idle_blink_at = max(self.next_idle_blink_at, start_s + self.config.blink_interval_s)
         return True
 
-    def schedule_gaze(self, gaze: PendingGaze) -> TimelineGaze:
+    def schedule_gaze(self, gaze: PendingGaze, *, replace_pending: bool = False) -> TimelineGaze:
         gaze_to_curves(gaze.yaw, gaze.pitch, gaze.dwell_ms)
         now = time.monotonic()
+        if replace_pending:
+            self.gaze_events.clear()
         latest_gaze_end = self.latest_explicit_gaze_end_s()
         start_s = now
         if latest_gaze_end is not None:
@@ -674,15 +691,9 @@ class RobotEngine:
         self.next_idle_blink_at = max(self.next_idle_blink_at, now + self.config.blink_interval_s)
 
     def prune_timeline(self, now: float) -> None:
-        self.gaze_events = [event for event in self.gaze_events if event.end_s > now]
-        self.blink_events = [event for event in self.blink_events if self.timeline_blink_end_s(event) > now]
-        self.neck_stretch_events = [
-            event for event in self.neck_stretch_events
-            if self.timeline_neck_stretch_end_s(event) > now
-        ]
-        self.speech_motion_events = [
-            event for event in self.speech_motion_events
-            if self.timeline_speech_motion_end_s(event) > now
+        self.blink_events = [
+            event for event in self.blink_events
+            if event.reason != "idle" or self.timeline_blink_end_s(event) > now
         ]
 
     def collect_render_window(
@@ -709,7 +720,7 @@ class RobotEngine:
             for event in sorted(all_events, key=lambda item: item.start_s):
                 if event in included:
                     continue
-                event_end_s = self.timeline_event_end_s(event)
+                event_end_s = self.timeline_event_effective_end_s(event, render_start_s)
                 if event.start_s <= block_end_s + 0.001 and event_end_s > render_start_s:
                     included.add(event)
                     block_end_s = max(block_end_s, event_end_s)
@@ -750,7 +761,7 @@ class RobotEngine:
 
         for gaze in sorted(gazes, key=lambda event: event.start_s):
             start_ms = max(0.0, (gaze.start_s - render_start_s) * 1000.0)
-            end_ms = max(start_ms + 1.0, (gaze.end_s - render_start_s) * 1000.0)
+            end_ms = start_ms + max(1.0, gaze.dwell_s * 1000.0)
             if start_ms > cursor_ms:
                 yaw_segments.append(HoldYaw(cursor_ms, start_ms, hold_yaw))
                 pitch_segments.append(HoldYaw(cursor_ms, start_ms, hold_pitch))

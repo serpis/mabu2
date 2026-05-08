@@ -57,8 +57,14 @@ När motorboardet är idle och det finns ett event vid `t=0` renderar engine
 hela tidslinjen fram till nästa idle-punkt. Det betyder att gaze, blink och
 andra overlays samplas tillsammans och skickas som ett komplett script. Gaze
 och blink använder sex kanaler; neck stretch använder sju eftersom `neck_tilt`
-behövs. Nya `gaze`-kommandon läggs vid `t=0` om boarden är idle, annars efter
-det script eller den explicita gaze som redan ligger först i kön.
+behövs.
+
+Gaze är baslagret. Trackingkod får ersätta en ännu orenderad gaze med senaste
+target, även om boarden just nu kör ett blink-/nack-/tal-script. När boarden
+blir idle renderas den senaste gaze-targeten tillsammans med de overlay-events
+som ligger vid samma tid. Om ett event redan borde ha startat när boarden blir
+idle körs hela eventets duration från faktisk renderstart; ett busy motorboard
+ska inte äta upp durationen innan kommandot ens har skickats.
 
 Idle-blinkar är inte permanenta köposter. De genereras från `--blink-interval`
 när roboten faktiskt är idle, och framtida idle-blinkar kan flyttas om ett
