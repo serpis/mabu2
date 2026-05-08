@@ -14,4 +14,6 @@ rsync -av \
   camera \
   "$PI_HOST:$PI_DIR/"
 
+rsync -av --delete sound/ "$PI_HOST:$PI_DIR/sound/"
+
 ssh -t "$PI_HOST" "sudo systemctl restart face-follow.service && systemctl status --no-pager -l face-follow.service"

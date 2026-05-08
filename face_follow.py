@@ -5,6 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import re
+import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -13,6 +17,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from camera.face_detect import BOUNDARY, FaceTrack, MarkerTrack, RpicamFaceTracker, TrackedFaceFrame
+from robot_animation import (
+    SPEECH_MOTION_DEFAULT_PITCH_DEG,
+    SPEECH_MOTION_DEFAULT_TILT_DEG,
+    SPEECH_MOTION_DEFAULT_YAW_DEG,
+)
 from robot_engine import BoardState, PendingGaze, RobotEngine, default_engine_config
 from robot_motion import CHANNELS
 
@@ -27,6 +36,33 @@ REACHABLE_YAW_MIN = CHANNELS["neck_rotation"].min_angle + CHANNELS["eye_leftrigh
 REACHABLE_YAW_MAX = CHANNELS["neck_rotation"].max_angle + CHANNELS["eye_leftright"].max_angle
 REACHABLE_PITCH_MIN = CHANNELS["neck_elevation"].min_angle + CHANNELS["eye_updown"].min_angle
 REACHABLE_PITCH_MAX = CHANNELS["neck_elevation"].max_angle + CHANNELS["eye_updown"].max_angle
+SUPPORTED_SOUND_EXTENSIONS = {".aac", ".aif", ".aiff", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
+SOUND_USB_CARD_HINTS = ("JOUNIVO", "USB-Audio", "USB Audio")
+DEFAULT_SOUND_VOLUME_PERCENT = 90
+DEFAULT_SPEECH_MOTION_AMPLITUDE_PERCENT = 100
+MAX_SPEECH_MOTION_AMPLITUDE_PERCENT = 300
+SOUND_PLAYER_COMMANDS = (
+    ("mpg123", ("mpg123", "-q", "{path}")),
+    ("ffplay", ("ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "{path}")),
+    ("mpv", ("mpv", "--no-video", "--really-quiet", "{path}")),
+    ("cvlc", ("cvlc", "--play-and-exit", "--quiet", "{path}")),
+    ("play", ("play", "-q", "{path}")),
+)
+
+
+def normalize_sound_volume_percent(value: float | str) -> int:
+    return int(round(min(max(float(value), 0.0), 100.0)))
+
+
+def normalize_speech_motion_amplitude_percent(value: float | str) -> int:
+    return int(
+        round(
+            min(
+                max(float(value), 0.0),
+                float(MAX_SPEECH_MOTION_AMPLITUDE_PERCENT),
+            )
+        )
+    )
 
 
 def clamp_gaze_target(target: tuple[float, float]) -> tuple[float, float]:
@@ -50,6 +86,8 @@ class SharedCameraMjpegServer:
         gaze_mode: str,
         target_mode: str,
         eyelid_offset: float,
+        sound_volume_percent: int,
+        speech_motion_amplitude_percent: int,
     ) -> None:
         self.camera = camera
         self.port = port
@@ -83,6 +121,17 @@ class SharedCameraMjpegServer:
         self.camera.set_marker_enabled(target_mode == TARGET_MODE_MARKERS)
         self.expression_lock = threading.Lock()
         self.eyelid_offset = eyelid_offset
+        self.sound_dir = Path(__file__).resolve().parent / "sound"
+        self.sound_lock = threading.Lock()
+        self.sound_process: subprocess.Popen | None = None
+        self.sound_volume_percent = normalize_sound_volume_percent(sound_volume_percent)
+        self.speech_motion_amplitude_percent = normalize_speech_motion_amplitude_percent(
+            speech_motion_amplitude_percent
+        )
+        self.sound_last_result: dict = {
+            "ok": None,
+            "status": "idle",
+        }
         self._save_runtime_settings()
 
     def set_debug(self, snapshot: dict) -> None:
@@ -118,6 +167,8 @@ class SharedCameraMjpegServer:
         if self.thread is not None:
             self.thread.join(timeout=2)
             self.thread = None
+        with self.sound_lock:
+            self._stop_sound_locked()
 
     def _serve(self) -> None:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -164,6 +215,7 @@ class SharedCameraMjpegServer:
                         "gaze": self._gaze_state(),
                         "target_mode": self._target_state(),
                         "expression": self._expression_state(),
+                        "sound": self._sound_state(),
                         "settings": self._settings_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
                         "served_at": time.time(),
@@ -209,6 +261,14 @@ class SharedCameraMjpegServer:
                 body = self._handle_expression_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._expression_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/sound"):
+            try:
+                body = self._handle_sound_request(path)
+            except ValueError as exc:
+                body = {**self._sound_state(), "ok": False, "error": str(exc)}
             self._send_json(conn, body)
             return
 
@@ -316,12 +376,17 @@ class SharedCameraMjpegServer:
             blink_interval_s = self.blink_interval_s
         with self.expression_lock:
             eyelid_offset = self.eyelid_offset
+        with self.sound_lock:
+            sound_volume_percent = self.sound_volume_percent
+            speech_motion_amplitude_percent = self.speech_motion_amplitude_percent
         return {
             "gaze_mode": gaze_mode,
             "target_mode": target_mode,
             "idle_blink_enabled": idle_blink_enabled,
             "blink_interval_s": blink_interval_s,
             "eyelid_offset": eyelid_offset,
+            "sound_volume_percent": sound_volume_percent,
+            "speech_motion_amplitude_percent": speech_motion_amplitude_percent,
         }
 
     def _settings_state(self) -> dict:
@@ -358,6 +423,263 @@ class SharedCameraMjpegServer:
             return self._expression_state()
 
         return {"error": f"unknown expression action: {action}", **self._expression_state()}
+
+    def _sound_clips(self) -> list[dict]:
+        try:
+            entries = list(self.sound_dir.iterdir())
+        except OSError:
+            return []
+        clips = []
+        for path in entries:
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED_SOUND_EXTENSIONS:
+                continue
+            clips.append(
+                {
+                    "id": path.name,
+                    "label": path.stem.replace("_", " ").replace("-", " "),
+                    "file": path.name,
+                }
+            )
+        return sorted(clips, key=lambda item: item["label"].lower())
+
+    def _sound_clip_path(self, clip: str) -> Path:
+        if not clip or "/" in clip or "\\" in clip:
+            raise ValueError(f"invalid sound clip: {clip}")
+        path = self.sound_dir / clip
+        if path.suffix.lower() not in SUPPORTED_SOUND_EXTENSIONS:
+            raise ValueError(f"unsupported sound clip type: {clip}")
+        if not path.is_file():
+            raise ValueError(f"sound file not found: {path}")
+        return path
+
+    def _sound_state_locked(self) -> dict:
+        running = self.sound_process is not None and self.sound_process.poll() is None
+        state = {
+            **self.sound_last_result,
+            "clips": self._sound_clips(),
+            "sound_dir": str(self.sound_dir),
+            "running": running,
+            "volume_percent": self.sound_volume_percent,
+            "speech_motion_amplitude_percent": self.speech_motion_amplitude_percent,
+        }
+        if self.sound_process is not None and not running:
+            state["returncode"] = self.sound_process.returncode
+            if state.get("status") == "playing":
+                if self.sound_process.returncode == 0:
+                    state["status"] = "finished"
+                else:
+                    state["ok"] = False
+                    state["status"] = "failed"
+        return state
+
+    def _sound_state(self) -> dict:
+        with self.sound_lock:
+            return self._sound_state_locked()
+
+    def is_sound_running(self) -> bool:
+        with self.sound_lock:
+            return self.sound_process is not None and self.sound_process.poll() is None
+
+    def speech_motion_amplitude_snapshot(self) -> int:
+        with self.sound_lock:
+            return self.speech_motion_amplitude_percent
+
+    def _handle_sound_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._sound_state()
+
+        if action == "play":
+            clips = self._sound_clips()
+            default_clip = clips[0]["id"] if clips else ""
+            clip = params.get("clip", [default_clip])[0]
+            return self._play_sound_clip(clip)
+
+        if action in {"set_volume", "volume"}:
+            if "volume" not in params:
+                raise ValueError("missing volume")
+            volume_percent = normalize_sound_volume_percent(params["volume"][0])
+            with self.sound_lock:
+                self.sound_volume_percent = volume_percent
+            self._set_alsa_volume(self._preferred_alsa_output(), volume_percent)
+            self._save_runtime_settings()
+            return self._sound_state()
+
+        if action in {"set_speech_motion", "speech_motion"}:
+            if "amplitude" not in params:
+                raise ValueError("missing amplitude")
+            amplitude_percent = normalize_speech_motion_amplitude_percent(params["amplitude"][0])
+            with self.sound_lock:
+                self.speech_motion_amplitude_percent = amplitude_percent
+            self._save_runtime_settings()
+            return self._sound_state()
+
+        if any(action == item["id"] for item in self._sound_clips()):
+            return self._play_sound_clip(action)
+
+        return {**self._sound_state(), "ok": False, "error": f"unknown sound action: {action}"}
+
+    def _preferred_alsa_output(self) -> dict | None:
+        cards_path = Path("/proc/asound/cards")
+        try:
+            lines = cards_path.read_text().splitlines()
+        except OSError:
+            return None
+
+        current: dict | None = None
+        for line in lines:
+            match = re.match(r"\s*(\d+)\s+\[([^\]]+)\]:\s+(.+)", line)
+            if match:
+                current = {
+                    "card_num": match.group(1),
+                    "card_id": match.group(2).strip(),
+                    "summary": line.strip(),
+                    "detail": "",
+                }
+                continue
+            if current is None:
+                continue
+            current["detail"] = line.strip()
+            haystack = " ".join(str(value) for value in current.values())
+            if any(hint in haystack for hint in SOUND_USB_CARD_HINTS):
+                current["device"] = f"plughw:CARD={current['card_id']},DEV=0"
+                return current
+
+        return None
+
+    def _set_alsa_volume(self, output: dict | None, volume_percent: int | None = None) -> None:
+        if output is None or shutil.which("amixer") is None:
+            return
+        if volume_percent is None:
+            with self.sound_lock:
+                volume_percent = self.sound_volume_percent
+        try:
+            subprocess.run(
+                [
+                    "amixer",
+                    "-c",
+                    str(output["card_num"]),
+                    "set",
+                    "PCM",
+                    f"{volume_percent}%",
+                    "unmute",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=0.5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def _stop_sound_locked(self) -> None:
+        process = self.sound_process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.terminate()
+        try:
+            process.wait(timeout=0.35)
+            time.sleep(0.03)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.kill()
+        try:
+            process.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(0.03)
+
+    def _sound_player_commands(self, path: Path) -> list[tuple[str, list[str]]]:
+        commands = []
+        output = self._preferred_alsa_output()
+        ffmpeg = shutil.which("ffmpeg")
+        aplay = shutil.which("aplay")
+        if output is not None and ffmpeg is not None and aplay is not None:
+            self._set_alsa_volume(output)
+            commands.append(
+                (
+                    f"ffmpeg/aplay:{output['device']}",
+                    [
+                        "/bin/sh",
+                        "-c",
+                        '"$1" -hide_banner -loglevel error -i "$2" -f wav - | "$3" -q -D "$4"',
+                        "sound-play",
+                        ffmpeg,
+                        str(path),
+                        aplay,
+                        str(output["device"]),
+                    ],
+                )
+            )
+
+        for name, template in SOUND_PLAYER_COMMANDS:
+            executable = shutil.which(name)
+            if executable is None:
+                continue
+            command = [
+                executable if part == name else str(path) if part == "{path}" else part
+                for part in template
+            ]
+            commands.append((name, command))
+        return commands
+
+    def _play_sound_clip(self, clip: str) -> dict:
+        path = self._sound_clip_path(clip)
+
+        commands = self._sound_player_commands(path)
+        if not commands:
+            tried = ", ".join(name for name, _ in SOUND_PLAYER_COMMANDS)
+            raise ValueError(f"no supported audio player found; tried: {tried}")
+
+        errors = []
+        with self.sound_lock:
+            self._stop_sound_locked()
+
+            for player, command in commands:
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                except OSError as exc:
+                    errors.append(f"{player}: {exc}")
+                    continue
+
+                self.sound_process = process
+                self.sound_last_result = {
+                    "ok": True,
+                    "status": "playing",
+                    "clip": clip,
+                    "file": str(path),
+                    "player": player,
+                    "pid": process.pid,
+                    "started_at": time.time(),
+                }
+                return self._sound_state_locked()
+
+            self.sound_last_result = {
+                "ok": False,
+                "status": "failed",
+                "clip": clip,
+                "file": str(path),
+                "errors": errors,
+            }
+            return self._sound_state_locked()
 
     def _gaze_state(self) -> dict:
         with self.gaze_lock:
@@ -595,6 +917,9 @@ label{display:block;margin:8px 14px;color:#c9c9c9}
 .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .panel{border-top:1px solid #333;padding:8px 0}
 .controls{padding:4px 14px}
+.sound-list{display:flex;flex-wrap:wrap;gap:6px}
+.sound-list button{margin:0}
+.sound-empty{color:#9ca3af}
 .gaze-pad{position:relative;margin:10px 14px;height:220px;background:#080808;border:1px solid #444;touch-action:none;cursor:crosshair}
 .gaze-pad:before,.gaze-pad:after{content:"";position:absolute;background:#333}
 .gaze-pad:before{left:50%;top:0;bottom:0;width:1px}
@@ -645,6 +970,13 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
       <div class="row"><div class="k">state</div><div class="v" id="blinkState">-</div></div>
     </div>
     <div class="panel">
+      <h1>Ljud</h1>
+      <div class="row"><div class="k">volume</div><div class="v"><input id="soundVolume" type="range" min="0" max="100" step="1" value="90"> <span id="soundVolumeValue">90%</span></div></div>
+      <div class="row"><div class="k">head move</div><div class="v"><input id="speechMotionAmplitude" type="range" min="0" max="300" step="5" value="100"> <span id="speechMotionAmplitudeValue">100%</span></div></div>
+      <div class="controls sound-list" id="soundList"></div>
+      <div class="row"><div class="k">state</div><div class="v" id="soundState">-</div></div>
+    </div>
+    <div class="panel">
       <h1>Calibration</h1>
       <label><input id="manualMode" type="checkbox"> Direct from gaze pad</label>
       <div class="gaze-pad" id="gazePad">
@@ -685,10 +1017,18 @@ const animationGaze=document.getElementById("animationGaze");
 const eyelidOffset=document.getElementById("eyelidOffset");
 const idleBlink=document.getElementById("idleBlink");
 const blinkInterval=document.getElementById("blinkInterval");
+const soundList=document.getElementById("soundList");
+const soundVolume=document.getElementById("soundVolume");
+const soundVolumeValue=document.getElementById("soundVolumeValue");
+const speechMotionAmplitude=document.getElementById("speechMotionAmplitude");
+const speechMotionAmplitudeValue=document.getElementById("speechMotionAmplitudeValue");
 const gazePad=document.getElementById("gazePad");
 const gazeMarker=document.getElementById("gazeMarker");
 let manualYaw=0;
 let manualPitch=0;
+let soundVolumeTimer=null;
+let speechMotionAmplitudeTimer=null;
+let renderedSoundClips="";
 const yawMin=-60, yawMax=60, pitchMin=-30, pitchMax=30;
 function manualValues(){return {yaw: manualYaw, pitch: manualPitch};}
 function updateManual(yaw,pitch){
@@ -778,6 +1118,74 @@ function renderBlink(b){
   }
   document.getElementById("blinkState").textContent=`${b.idle_blink_enabled ? "on" : "off"}, ${fmt(b.blink_interval_s)} s`;
 }
+async function sound(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/sound?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderSound(d);
+  return d;
+}
+function renderSound(s){
+  if(!s)return;
+  renderSoundClips(s.clips || []);
+  if(Number.isFinite(s.volume_percent) && document.activeElement !== soundVolume){
+    soundVolume.value=Math.round(s.volume_percent);
+  }
+  soundVolumeValue.textContent=`${soundVolume.value}%`;
+  if(Number.isFinite(s.speech_motion_amplitude_percent) && document.activeElement !== speechMotionAmplitude){
+    speechMotionAmplitude.value=Math.round(s.speech_motion_amplitude_percent);
+  }
+  speechMotionAmplitudeValue.textContent=`${speechMotionAmplitude.value}%`;
+  for(const button of soundList.querySelectorAll("button[data-clip]")){
+    button.classList.toggle("secondary", button.dataset.clip !== s.clip);
+  }
+  const el=document.getElementById("soundState");
+  const volumeText=Number.isFinite(s.volume_percent) ? `, vol ${Math.round(s.volume_percent)}%` : "";
+  if(s.ok === false){
+    el.textContent=`error: ${s.error || s.status || "failed"}`;
+  }else if(s.running){
+    el.textContent=`playing ${s.clip || "-"} via ${s.player || "-"}${volumeText}`;
+  }else{
+    el.textContent=`${s.status || "idle"}${volumeText}`;
+  }
+}
+function renderSoundClips(clips){
+  const key=JSON.stringify(clips.map((clip)=>clip.id));
+  if(key === renderedSoundClips)return;
+  renderedSoundClips=key;
+  soundList.replaceChildren();
+  if(!clips.length){
+    const empty=document.createElement("span");
+    empty.className="sound-empty";
+    empty.textContent="No sound files";
+    soundList.appendChild(empty);
+    return;
+  }
+  for(const clip of clips){
+    const button=document.createElement("button");
+    button.type="button";
+    button.dataset.clip=clip.id;
+    button.title=clip.file || clip.id;
+    button.textContent=clip.label || clip.id;
+    soundList.appendChild(button);
+  }
+}
+function updateSoundVolumeLabel(){
+  soundVolumeValue.textContent=`${soundVolume.value}%`;
+}
+function sendSoundVolume(){
+  sound("set_volume",{volume:soundVolume.value || "90"}).catch(()=>{
+    document.getElementById("soundState").textContent="volume failed";
+  });
+}
+function updateSpeechMotionAmplitudeLabel(){
+  speechMotionAmplitudeValue.textContent=`${speechMotionAmplitude.value}%`;
+}
+function sendSpeechMotionAmplitude(){
+  sound("set_speech_motion",{amplitude:speechMotionAmplitude.value || "100"}).catch(()=>{
+    document.getElementById("soundState").textContent="motion failed";
+  });
+}
 function renderCalibration(c){
   if(!c)return;
   manualMode.checked=!!c.enabled;
@@ -805,6 +1213,7 @@ async function tick(){
     renderGaze(d.gaze);
     renderExpression(d.expression);
     renderBlink(d.blink);
+    renderSound(d.sound);
     renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
   }catch(e){
@@ -816,6 +1225,33 @@ animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.check
 eyelidOffset.addEventListener("change",()=>expression("set",expressionValues()));
 idleBlink.addEventListener("change",()=>blink("set",blinkValues()));
 blinkInterval.addEventListener("change",()=>blink("set",blinkValues()));
+soundList.addEventListener("click",(ev)=>{
+  const button=ev.target.closest("button[data-clip]");
+  if(!button)return;
+  sound("play",{clip:button.dataset.clip}).catch(()=>{
+    document.getElementById("soundState").textContent="play failed";
+  });
+});
+soundVolume.addEventListener("input",()=>{
+  updateSoundVolumeLabel();
+  clearTimeout(soundVolumeTimer);
+  soundVolumeTimer=setTimeout(sendSoundVolume,150);
+});
+soundVolume.addEventListener("change",()=>{
+  updateSoundVolumeLabel();
+  clearTimeout(soundVolumeTimer);
+  sendSoundVolume();
+});
+speechMotionAmplitude.addEventListener("input",()=>{
+  updateSpeechMotionAmplitudeLabel();
+  clearTimeout(speechMotionAmplitudeTimer);
+  speechMotionAmplitudeTimer=setTimeout(sendSpeechMotionAmplitude,150);
+});
+speechMotionAmplitude.addEventListener("change",()=>{
+  updateSpeechMotionAmplitudeLabel();
+  clearTimeout(speechMotionAmplitudeTimer);
+  sendSpeechMotionAmplitude();
+});
 manualMode.addEventListener("change",()=>cal("enable",{enabled:manualMode.checked ? "1" : "0"}));
 gazePad.addEventListener("pointerdown",(ev)=>{
   const target=padTarget(ev);
@@ -877,6 +1313,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feedback-silence", type=float, default=0.20)
     parser.add_argument("--done-fallback", type=float, default=0.60)
     parser.add_argument("--eyelid-offset", type=float, default=-2.0)
+    parser.add_argument("--sound-volume", type=int, default=DEFAULT_SOUND_VOLUME_PERCENT)
+    parser.add_argument(
+        "--speech-motion-amplitude",
+        type=int,
+        default=DEFAULT_SPEECH_MOTION_AMPLITUDE_PERCENT,
+    )
     parser.add_argument("--loop-sleep", type=float, default=0.003)
     parser.add_argument("--mjpeg-port", type=int, default=8080)
     parser.add_argument("--debug-jpeg-quality", type=int, default=80)
@@ -928,6 +1370,16 @@ def apply_runtime_settings(args: argparse.Namespace) -> None:
     eyelid_offset = settings.get("eyelid_offset")
     if eyelid_offset is not None:
         args.eyelid_offset = float(eyelid_offset)
+
+    sound_volume_percent = settings.get("sound_volume_percent")
+    if sound_volume_percent is not None:
+        args.sound_volume = normalize_sound_volume_percent(sound_volume_percent)
+
+    speech_motion_amplitude_percent = settings.get("speech_motion_amplitude_percent")
+    if speech_motion_amplitude_percent is not None:
+        args.speech_motion_amplitude = normalize_speech_motion_amplitude_percent(
+            speech_motion_amplitude_percent
+        )
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -1198,6 +1650,14 @@ def schedule_blink_if_ready(engine: RobotEngine) -> bool:
     return True
 
 
+def schedule_speech_motion_if_ready(engine: RobotEngine) -> bool:
+    if engine.state != BoardState.IDLE or engine.speech_motion_events:
+        return False
+    engine.schedule_speech_motion()
+    engine.maybe_start_next()
+    return True
+
+
 def apply_blink_settings(
     engine: RobotEngine,
     *,
@@ -1228,6 +1688,26 @@ def apply_eyelid_offset(engine: RobotEngine, eyelid_offset: float, previous: flo
         **{**engine.config.__dict__, "eyelid_offset": eyelid_offset}
     )
     return eyelid_offset
+
+
+def apply_speech_motion_amplitude(
+    engine: RobotEngine,
+    amplitude_percent: int,
+    previous: int | None,
+) -> int:
+    amplitude_percent = normalize_speech_motion_amplitude_percent(amplitude_percent)
+    if previous == amplitude_percent:
+        return previous
+    scale = amplitude_percent / 100.0
+    engine.config = type(engine.config)(
+        **{
+            **engine.config.__dict__,
+            "speech_motion_yaw_deg": SPEECH_MOTION_DEFAULT_YAW_DEG * scale,
+            "speech_motion_pitch_deg": SPEECH_MOTION_DEFAULT_PITCH_DEG * scale,
+            "speech_motion_tilt_deg": SPEECH_MOTION_DEFAULT_TILT_DEG * scale,
+        }
+    )
+    return amplitude_percent
 
 
 def debug_snapshot(
@@ -1282,6 +1762,7 @@ def debug_snapshot(
         "engine_timeline_gazes": len(engine.gaze_events),
         "engine_timeline_blinks": len(engine.blink_events),
         "engine_timeline_stretches": len(engine.neck_stretch_events),
+        "engine_timeline_speech": len(engine.speech_motion_events),
         "sent": sent,
         "last_sent_age_ms": (
             round((now - last_sent_at) * 1000.0, 2)
@@ -1310,6 +1791,10 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--blink-interval must be > 0")
     if not -30.0 <= args.eyelid_offset <= 30.0:
         raise ValueError("--eyelid-offset must be between -30 and 30")
+    args.sound_volume = normalize_sound_volume_percent(args.sound_volume)
+    args.speech_motion_amplitude = normalize_speech_motion_amplitude_percent(
+        args.speech_motion_amplitude
+    )
     if args.feedback_silence < 0:
         raise ValueError("--feedback-silence must be >= 0")
     if args.done_fallback < 0:
@@ -1355,6 +1840,8 @@ def run(args: argparse.Namespace) -> int:
         gaze_mode=args.gaze_mode,
         target_mode=args.target_mode,
         eyelid_offset=args.eyelid_offset,
+        sound_volume_percent=args.sound_volume,
+        speech_motion_amplitude_percent=args.speech_motion_amplitude,
     )
 
     active_face_id: int | None = None
@@ -1364,6 +1851,7 @@ def run(args: argparse.Namespace) -> int:
     send_interval = 1.0 / args.send_hz
     applied_blink_settings: tuple[bool, float] | None = None
     applied_eyelid_offset: float | None = None
+    applied_speech_motion_amplitude: int | None = None
     next_auto_blink_at = time.monotonic() + args.blink_interval
 
     engine.open()
@@ -1392,6 +1880,11 @@ def run(args: argparse.Namespace) -> int:
                 engine,
                 mjpeg_server.expression_state_snapshot(),
                 applied_eyelid_offset,
+            )
+            applied_speech_motion_amplitude = apply_speech_motion_amplitude(
+                engine,
+                mjpeg_server.speech_motion_amplitude_snapshot(),
+                applied_speech_motion_amplitude,
             )
             engine.maybe_start_next()
             gaze_mode = mjpeg_server.gaze_mode_snapshot()
@@ -1506,6 +1999,9 @@ def run(args: argparse.Namespace) -> int:
                         min_angle_delta=args.min_angle_delta,
                     )
                 )
+
+            if mjpeg_server.is_sound_running():
+                schedule_speech_motion_if_ready(engine)
 
             time.sleep(args.loop_sleep)
     except KeyboardInterrupt:
