@@ -35,13 +35,22 @@ from robot_animation import (
     NECK_STRETCH_NECK_TILT_TAU_MS,
     NECK_STRETCH_NECK_YAW_TAU_MS,
     NECK_STRETCH_SETTLE_MS,
+    SPEECH_MOTION_DEFAULT_CYCLE_MS,
+    SPEECH_MOTION_DEFAULT_DURATION_MS,
+    SPEECH_MOTION_DEFAULT_PITCH_DEG,
+    SPEECH_MOTION_DEFAULT_SAMPLE_MS,
+    SPEECH_MOTION_DEFAULT_SETTLE_MS,
+    SPEECH_MOTION_DEFAULT_TILT_DEG,
+    SPEECH_MOTION_DEFAULT_YAW_DEG,
     NeckStretchEvent,
+    SpeechMotionEvent,
     blink_base_eyelid_angle,
     gaze_to_curves,
     merged_curve_end_ms,
     neck_stretch_event_end_ms,
     render_gaze_corners_curves,
     sample_ms_for_merged_script,
+    speech_motion_event_end_ms,
     YawTargetCurve,
 )
 from robot_motion import (
@@ -111,6 +120,17 @@ class TimelineNeckStretch:
 
 
 @dataclass(frozen=True)
+class TimelineSpeechMotion:
+    start_s: float
+    duration_ms: float
+    settle_ms: float
+    yaw_deg: float
+    pitch_deg: float
+    tilt_deg: float
+    cycle_ms: float
+
+
+@dataclass(frozen=True)
 class TimelineRender:
     command: Command
     duration_s: float
@@ -118,6 +138,7 @@ class TimelineRender:
     gazes: tuple[TimelineGaze, ...]
     blinks: tuple[TimelineBlink, ...]
     stretches: tuple[TimelineNeckStretch, ...]
+    speech_motions: tuple[TimelineSpeechMotion, ...]
     frame_count: int
 
 
@@ -141,6 +162,13 @@ class EngineConfig:
     neck_stretch_tilt_deg: float
     neck_stretch_duration_ms: float
     neck_stretch_settle_ms: float
+    speech_motion_sample_ms: float
+    speech_motion_chunk_ms: float
+    speech_motion_yaw_deg: float
+    speech_motion_pitch_deg: float
+    speech_motion_tilt_deg: float
+    speech_motion_cycle_ms: float
+    speech_motion_settle_ms: float
     feedback_silence_s: float
     done_fallback_s: float
     verbose: bool
@@ -172,6 +200,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--neck-stretch-tilt", type=float, default=NECK_STRETCH_DEFAULT_TILT_DEG)
     parser.add_argument("--neck-stretch-duration-ms", type=float, default=NECK_STRETCH_DEFAULT_DURATION_MS)
     parser.add_argument("--neck-stretch-settle-ms", type=float, default=NECK_STRETCH_SETTLE_MS)
+    parser.add_argument("--speech-motion-sample-ms", type=float, default=SPEECH_MOTION_DEFAULT_SAMPLE_MS)
+    parser.add_argument("--speech-motion-chunk-ms", type=float, default=SPEECH_MOTION_DEFAULT_DURATION_MS)
+    parser.add_argument("--speech-motion-yaw", type=float, default=SPEECH_MOTION_DEFAULT_YAW_DEG)
+    parser.add_argument("--speech-motion-pitch", type=float, default=SPEECH_MOTION_DEFAULT_PITCH_DEG)
+    parser.add_argument("--speech-motion-tilt", type=float, default=SPEECH_MOTION_DEFAULT_TILT_DEG)
+    parser.add_argument("--speech-motion-cycle-ms", type=float, default=SPEECH_MOTION_DEFAULT_CYCLE_MS)
+    parser.add_argument("--speech-motion-settle-ms", type=float, default=SPEECH_MOTION_DEFAULT_SETTLE_MS)
     parser.add_argument("--feedback-silence", type=float, default=DEFAULT_FEEDBACK_SILENCE_S)
     parser.add_argument("--done-fallback", type=float, default=DEFAULT_DONE_FALLBACK_S)
     parser.add_argument("--verbose", action="store_true")
@@ -198,6 +233,13 @@ def default_engine_config(
     neck_stretch_tilt_deg: float = NECK_STRETCH_DEFAULT_TILT_DEG,
     neck_stretch_duration_ms: float = NECK_STRETCH_DEFAULT_DURATION_MS,
     neck_stretch_settle_ms: float = NECK_STRETCH_SETTLE_MS,
+    speech_motion_sample_ms: float = SPEECH_MOTION_DEFAULT_SAMPLE_MS,
+    speech_motion_chunk_ms: float = SPEECH_MOTION_DEFAULT_DURATION_MS,
+    speech_motion_yaw_deg: float = SPEECH_MOTION_DEFAULT_YAW_DEG,
+    speech_motion_pitch_deg: float = SPEECH_MOTION_DEFAULT_PITCH_DEG,
+    speech_motion_tilt_deg: float = SPEECH_MOTION_DEFAULT_TILT_DEG,
+    speech_motion_cycle_ms: float = SPEECH_MOTION_DEFAULT_CYCLE_MS,
+    speech_motion_settle_ms: float = SPEECH_MOTION_DEFAULT_SETTLE_MS,
     feedback_silence_s: float = DEFAULT_FEEDBACK_SILENCE_S,
     done_fallback_s: float = DEFAULT_DONE_FALLBACK_S,
     verbose: bool = False,
@@ -221,6 +263,13 @@ def default_engine_config(
         neck_stretch_tilt_deg=neck_stretch_tilt_deg,
         neck_stretch_duration_ms=neck_stretch_duration_ms,
         neck_stretch_settle_ms=neck_stretch_settle_ms,
+        speech_motion_sample_ms=speech_motion_sample_ms,
+        speech_motion_chunk_ms=speech_motion_chunk_ms,
+        speech_motion_yaw_deg=speech_motion_yaw_deg,
+        speech_motion_pitch_deg=speech_motion_pitch_deg,
+        speech_motion_tilt_deg=speech_motion_tilt_deg,
+        speech_motion_cycle_ms=speech_motion_cycle_ms,
+        speech_motion_settle_ms=speech_motion_settle_ms,
         feedback_silence_s=feedback_silence_s,
         done_fallback_s=done_fallback_s,
         verbose=verbose,
@@ -270,6 +319,7 @@ class RobotEngine:
         self.gaze_events: list[TimelineGaze] = []
         self.blink_events: list[TimelineBlink] = []
         self.neck_stretch_events: list[TimelineNeckStretch] = []
+        self.speech_motion_events: list[TimelineSpeechMotion] = []
         self.idle_blink_enabled = config.idle_blink
         self.next_idle_blink_at = time.monotonic() + config.blink_interval_s
         self.last_blink_at: float | None = None
@@ -421,17 +471,50 @@ class RobotEngine:
         )
         return stretch.start_s + neck_stretch_event_end_ms(event) / 1000.0
 
-    def timeline_event_end_s(self, event: TimelineGaze | TimelineBlink | TimelineNeckStretch) -> float:
+    def timeline_speech_motion_event(
+        self,
+        speech: TimelineSpeechMotion,
+        render_start_s: float,
+    ) -> SpeechMotionEvent:
+        return SpeechMotionEvent(
+            start_ms=max(0.0, (speech.start_s - render_start_s) * 1000.0),
+            duration_ms=speech.duration_ms,
+            settle_ms=speech.settle_ms,
+            yaw_deg=speech.yaw_deg,
+            pitch_deg=speech.pitch_deg,
+            tilt_deg=speech.tilt_deg,
+            cycle_ms=speech.cycle_ms,
+        )
+
+    def timeline_speech_motion_end_s(self, speech: TimelineSpeechMotion) -> float:
+        event = SpeechMotionEvent(
+            start_ms=0.0,
+            duration_ms=speech.duration_ms,
+            settle_ms=speech.settle_ms,
+            yaw_deg=speech.yaw_deg,
+            pitch_deg=speech.pitch_deg,
+            tilt_deg=speech.tilt_deg,
+            cycle_ms=speech.cycle_ms,
+        )
+        return speech.start_s + speech_motion_event_end_ms(event) / 1000.0
+
+    def timeline_event_end_s(
+        self,
+        event: TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion,
+    ) -> float:
         if isinstance(event, TimelineGaze):
             return event.end_s
         if isinstance(event, TimelineNeckStretch):
             return self.timeline_neck_stretch_end_s(event)
+        if isinstance(event, TimelineSpeechMotion):
+            return self.timeline_speech_motion_end_s(event)
         return self.timeline_blink_end_s(event)
 
     def latest_timeline_end_s(self, *, include_idle_blinks: bool = True) -> float | None:
-        events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch] = [
+        events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion] = [
             *self.gaze_events,
             *self.neck_stretch_events,
+            *self.speech_motion_events,
         ]
         events.extend(
             blink for blink in self.blink_events
@@ -553,6 +636,32 @@ class RobotEngine:
         )
         return event
 
+    def schedule_speech_motion(self, duration_ms: float | None = None) -> TimelineSpeechMotion:
+        now = time.monotonic()
+        start_s = now
+        if self.state != BoardState.IDLE:
+            start_s = max(start_s, self.expected_done_at)
+
+        event = TimelineSpeechMotion(
+            start_s=start_s,
+            duration_ms=duration_ms or self.config.speech_motion_chunk_ms,
+            settle_ms=self.config.speech_motion_settle_ms,
+            yaw_deg=self.config.speech_motion_yaw_deg,
+            pitch_deg=self.config.speech_motion_pitch_deg,
+            tilt_deg=self.config.speech_motion_tilt_deg,
+            cycle_ms=self.config.speech_motion_cycle_ms,
+        )
+        self.blink_events = [
+            blink for blink in self.blink_events
+            if blink.reason != "idle" or blink.start_s < start_s
+        ]
+        self.speech_motion_events.append(event)
+        self.next_idle_blink_at = max(
+            self.next_idle_blink_at,
+            self.timeline_speech_motion_end_s(event) + self.config.blink_interval_s,
+        )
+        return event
+
     def ensure_idle_blink_due(self, now: float) -> None:
         if not self.idle_blink_enabled or now < self.next_idle_blink_at:
             return
@@ -571,6 +680,10 @@ class RobotEngine:
             event for event in self.neck_stretch_events
             if self.timeline_neck_stretch_end_s(event) > now
         ]
+        self.speech_motion_events = [
+            event for event in self.speech_motion_events
+            if self.timeline_speech_motion_end_s(event) > now
+        ]
 
     def collect_render_window(
         self,
@@ -579,14 +692,16 @@ class RobotEngine:
         tuple[TimelineGaze, ...],
         tuple[TimelineBlink, ...],
         tuple[TimelineNeckStretch, ...],
+        tuple[TimelineSpeechMotion, ...],
         float,
     ] | None:
-        all_events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch] = [
+        all_events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion] = [
             *self.gaze_events,
             *self.blink_events,
             *self.neck_stretch_events,
+            *self.speech_motion_events,
         ]
-        included: set[TimelineGaze | TimelineBlink | TimelineNeckStretch] = set()
+        included: set[TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion] = set()
         block_end_s = render_start_s
 
         while True:
@@ -608,7 +723,10 @@ class RobotEngine:
         gazes = tuple(event for event in included if isinstance(event, TimelineGaze))
         blinks = tuple(event for event in included if isinstance(event, TimelineBlink))
         stretches = tuple(event for event in included if isinstance(event, TimelineNeckStretch))
-        return gazes, blinks, stretches, block_end_s
+        speech_motions = tuple(
+            event for event in included if isinstance(event, TimelineSpeechMotion)
+        )
+        return gazes, blinks, stretches, speech_motions, block_end_s
 
     def gaze_curves_for_window(
         self,
@@ -648,32 +766,43 @@ class RobotEngine:
         window = self.collect_render_window(render_start_s)
         if window is None:
             return None
-        gazes, blinks, stretches, render_end_s = window
+        gazes, blinks, stretches, speech_motions, render_end_s = window
         yaw_curve, pitch_curve = self.gaze_curves_for_window(render_start_s, render_end_s, gazes)
         blink_events = tuple(self.timeline_blink_event(blink, render_start_s) for blink in blinks)
         neck_stretch_events = tuple(
             self.timeline_neck_stretch_event(stretch, render_start_s)
             for stretch in stretches
         )
-        channel_count = len(GAZE_TO_STRETCH_CHANNELS) if neck_stretch_events else len(GAZE_TO_CHANNELS)
+        speech_motion_events = tuple(
+            self.timeline_speech_motion_event(speech, render_start_s)
+            for speech in speech_motions
+        )
+        has_neck_overlays = bool(neck_stretch_events or speech_motion_events)
+        channel_count = len(GAZE_TO_STRETCH_CHANNELS) if has_neck_overlays else len(GAZE_TO_CHANNELS)
         render_duration_ms = merged_curve_end_ms(
             yaw_curve,
             pitch_curve,
             blink_events,
             neck_stretch_events,
+            speech_motion_events,
         )
         sample_ms = sample_ms_for_merged_script(
-            min(self.config.gaze_sample_ms, self.config.neck_stretch_sample_ms)
-            if neck_stretch_events
+            min(
+                self.config.gaze_sample_ms,
+                self.config.neck_stretch_sample_ms,
+                self.config.speech_motion_sample_ms,
+            )
+            if has_neck_overlays
             else self.config.gaze_sample_ms,
             channel_count,
             yaw_curve,
             pitch_curve,
             blink_events,
             neck_stretch_events,
+            speech_motion_events,
         )
         render_config = GazeCornersConfig(sample_ms=sample_ms)
-        if neck_stretch_events:
+        if has_neck_overlays:
             render_config = GazeCornersConfig(
                 sample_ms=sample_ms,
                 eye_tau_ms=NECK_STRETCH_EYE_TAU_MS,
@@ -692,6 +821,7 @@ class RobotEngine:
             eyelid_offset=self.config.eyelid_offset,
             blink_events=blink_events,
             neck_stretch_events=neck_stretch_events,
+            speech_motion_events=speech_motion_events,
         )
         return TimelineRender(
             command=rendered.command(),
@@ -700,6 +830,7 @@ class RobotEngine:
             gazes=gazes,
             blinks=blinks,
             stretches=stretches,
+            speech_motions=speech_motions,
             frame_count=len(rendered.keyframes),
         )
 
@@ -713,6 +844,7 @@ class RobotEngine:
             f"timeline render_ms={rendered.render_duration_ms:g} "
             f"frames={rendered.frame_count} gazes={len(rendered.gazes)} "
             f"blinks={len(rendered.blinks)} stretches={len(rendered.stretches)} "
+            f"speech={len(rendered.speech_motions)} "
             f"blink_reasons={blink_reasons}"
         )
         self.send_rendered_command(rendered.command, script_duration_s=rendered.duration_s)
@@ -721,6 +853,10 @@ class RobotEngine:
         self.neck_stretch_events = [
             event for event in self.neck_stretch_events
             if event not in rendered.stretches
+        ]
+        self.speech_motion_events = [
+            event for event in self.speech_motion_events
+            if event not in rendered.speech_motions
         ]
         return True
 
@@ -742,10 +878,11 @@ class RobotEngine:
             feedback_age = f"{time.monotonic() - self.last_feedback_at:.2f}s"
         now = time.monotonic()
         next_event = "none"
-        all_events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch] = [
+        all_events: list[TimelineGaze | TimelineBlink | TimelineNeckStretch | TimelineSpeechMotion] = [
             *self.gaze_events,
             *self.blink_events,
             *self.neck_stretch_events,
+            *self.speech_motion_events,
         ]
         if all_events:
             event = min(all_events, key=lambda item: item.start_s)
@@ -754,6 +891,7 @@ class RobotEngine:
             f"state={self.state.value} feedback_age={feedback_age} "
             f"timeline_gazes={len(self.gaze_events)} timeline_blinks={len(self.blink_events)} "
             f"timeline_stretches={len(self.neck_stretch_events)} "
+            f"timeline_speech={len(self.speech_motion_events)} "
             f"next={next_event} idle_blink={self.idle_blink_enabled}"
         )
 
@@ -770,7 +908,7 @@ class RobotEngine:
             elif command == "help":
                 self.log(
                     "commands: gaze YAW[,PITCH] [MS] | gaze YAW PITCH [MS] | "
-                    "blink | stretch | idle on|off | interval SEC | status | quit"
+                    "blink | stretch | speech [MS] | idle on|off | interval SEC | status | quit"
                 )
             elif command == "status":
                 self.print_status()
@@ -784,6 +922,13 @@ class RobotEngine:
                 event = self.schedule_neck_stretch()
                 self.log(
                     f"scheduled neck stretch at +{max(0.0, event.start_s - time.monotonic()):.2f}s"
+                )
+            elif command in {"speech", "talk"}:
+                duration_ms = float(parts[1]) if len(parts) >= 2 else self.config.speech_motion_chunk_ms
+                event = self.schedule_speech_motion(duration_ms)
+                self.log(
+                    f"scheduled speech motion ms={event.duration_ms:g} "
+                    f"at +{max(0.0, event.start_s - time.monotonic()):.2f}s"
                 )
             elif command in {"gaze", "gaze-to", "look"}:
                 gaze = parse_gaze_line(parts)
@@ -865,6 +1010,21 @@ def main() -> int:
     if min(args.neck_stretch_pitch, args.neck_stretch_yaw, args.neck_stretch_tilt) < 0:
         print("--neck-stretch-* amplitudes must be >= 0", file=sys.stderr)
         return 2
+    if args.speech_motion_sample_ms <= 0:
+        print("--speech-motion-sample-ms must be > 0", file=sys.stderr)
+        return 2
+    if args.speech_motion_chunk_ms <= 0:
+        print("--speech-motion-chunk-ms must be > 0", file=sys.stderr)
+        return 2
+    if args.speech_motion_cycle_ms <= 0:
+        print("--speech-motion-cycle-ms must be > 0", file=sys.stderr)
+        return 2
+    if args.speech_motion_settle_ms < 0:
+        print("--speech-motion-settle-ms must be >= 0", file=sys.stderr)
+        return 2
+    if min(args.speech_motion_yaw, args.speech_motion_pitch, args.speech_motion_tilt) < 0:
+        print("--speech-motion amplitudes must be >= 0", file=sys.stderr)
+        return 2
     config = EngineConfig(
         port=args.port,
         baudrate=args.baudrate,
@@ -884,6 +1044,13 @@ def main() -> int:
         neck_stretch_tilt_deg=args.neck_stretch_tilt,
         neck_stretch_duration_ms=args.neck_stretch_duration_ms,
         neck_stretch_settle_ms=args.neck_stretch_settle_ms,
+        speech_motion_sample_ms=args.speech_motion_sample_ms,
+        speech_motion_chunk_ms=args.speech_motion_chunk_ms,
+        speech_motion_yaw_deg=args.speech_motion_yaw,
+        speech_motion_pitch_deg=args.speech_motion_pitch,
+        speech_motion_tilt_deg=args.speech_motion_tilt,
+        speech_motion_cycle_ms=args.speech_motion_cycle_ms,
+        speech_motion_settle_ms=args.speech_motion_settle_ms,
         feedback_silence_s=args.feedback_silence,
         done_fallback_s=args.done_fallback,
         verbose=args.verbose,

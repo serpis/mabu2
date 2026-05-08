@@ -84,6 +84,13 @@ NECK_STRETCH_NECK_YAW_TAU_MS = 140.0
 NECK_STRETCH_NECK_PITCH_TAU_MS = 100.0
 NECK_STRETCH_NECK_TILT_TAU_MS = 120.0
 NECK_STRETCH_EYE_PITCH_LIMIT_DEG = 14.0
+SPEECH_MOTION_DEFAULT_DURATION_MS = 650.0
+SPEECH_MOTION_DEFAULT_SETTLE_MS = 140.0
+SPEECH_MOTION_DEFAULT_SAMPLE_MS = 65.0
+SPEECH_MOTION_DEFAULT_YAW_DEG = 3.0
+SPEECH_MOTION_DEFAULT_PITCH_DEG = 2.2
+SPEECH_MOTION_DEFAULT_TILT_DEG = 2.0
+SPEECH_MOTION_DEFAULT_CYCLE_MS = 420.0
 REACHABLE_RANGE_EPS_DEG = 0.05
 
 
@@ -174,6 +181,17 @@ class NeckStretchEvent:
     tilt_deg: float = NECK_STRETCH_DEFAULT_TILT_DEG
     duration_ms: float = NECK_STRETCH_DEFAULT_DURATION_MS
     settle_ms: float = NECK_STRETCH_SETTLE_MS
+
+
+@dataclass(frozen=True)
+class SpeechMotionEvent:
+    start_ms: float = 0.0
+    duration_ms: float = SPEECH_MOTION_DEFAULT_DURATION_MS
+    settle_ms: float = SPEECH_MOTION_DEFAULT_SETTLE_MS
+    yaw_deg: float = SPEECH_MOTION_DEFAULT_YAW_DEG
+    pitch_deg: float = SPEECH_MOTION_DEFAULT_PITCH_DEG
+    tilt_deg: float = SPEECH_MOTION_DEFAULT_TILT_DEG
+    cycle_ms: float = SPEECH_MOTION_DEFAULT_CYCLE_MS
 
 
 @dataclass(frozen=True)
@@ -508,8 +526,33 @@ def validate_neck_stretch_event(event: NeckStretchEvent) -> None:
             raise ValueError(f"{name} must be >= 0")
 
 
+def validate_speech_motion_event(event: SpeechMotionEvent) -> None:
+    if event.start_ms < 0:
+        raise ValueError("speech motion start_ms must be >= 0")
+    if event.duration_ms <= 0:
+        raise ValueError("speech motion duration_ms must be > 0")
+    if event.settle_ms < 0:
+        raise ValueError("speech motion settle_ms must be >= 0")
+    if event.cycle_ms <= 0:
+        raise ValueError("speech motion cycle_ms must be > 0")
+    for name, value in (
+        ("speech motion yaw_deg", event.yaw_deg),
+        ("speech motion pitch_deg", event.pitch_deg),
+        ("speech motion tilt_deg", event.tilt_deg),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+        if value < 0:
+            raise ValueError(f"{name} must be >= 0")
+
+
 def neck_stretch_event_end_ms(event: NeckStretchEvent) -> float:
     validate_neck_stretch_event(event)
+    return event.start_ms + event.duration_ms + event.settle_ms
+
+
+def speech_motion_event_end_ms(event: SpeechMotionEvent) -> float:
+    validate_speech_motion_event(event)
     return event.start_ms + event.duration_ms + event.settle_ms
 
 
@@ -543,6 +586,27 @@ def neck_stretch_event_offsets(t_ms: float, event: NeckStretchEvent) -> tuple[fl
     return 0.0, 0.0, 0.0
 
 
+def speech_motion_event_offsets(t_ms: float, event: SpeechMotionEvent) -> tuple[float, float, float]:
+    validate_speech_motion_event(event)
+    if t_ms < event.start_ms or t_ms >= event.start_ms + event.duration_ms:
+        return 0.0, 0.0, 0.0
+
+    local_ms = t_ms - event.start_ms
+    progress = local_ms / event.duration_ms
+    fade_ms = min(180.0, event.duration_ms * 0.3)
+    fade_in = clamp(local_ms / fade_ms, 0.0, 1.0) if fade_ms > 0 else 1.0
+    fade_out = clamp((event.duration_ms - local_ms) / fade_ms, 0.0, 1.0) if fade_ms > 0 else 1.0
+    envelope = min(fade_in, fade_out)
+    envelope *= math.sin(math.pi * progress) ** 0.35
+
+    phase = 2.0 * math.pi * local_ms / event.cycle_ms
+    return (
+        event.yaw_deg * envelope * math.sin(phase),
+        event.pitch_deg * envelope * math.sin(phase * 1.37 + 0.9),
+        event.tilt_deg * envelope * math.sin(phase * 0.77 + 1.7),
+    )
+
+
 def neck_stretch_offsets(t_ms: float, events: Sequence[NeckStretchEvent]) -> tuple[float, float, float]:
     yaw = 0.0
     pitch = 0.0
@@ -555,17 +619,45 @@ def neck_stretch_offsets(t_ms: float, events: Sequence[NeckStretchEvent]) -> tup
     return yaw, pitch, tilt
 
 
+def speech_motion_offsets(t_ms: float, events: Sequence[SpeechMotionEvent]) -> tuple[float, float, float]:
+    yaw = 0.0
+    pitch = 0.0
+    tilt = 0.0
+    for event in events:
+        event_yaw, event_pitch, event_tilt = speech_motion_event_offsets(t_ms, event)
+        yaw += event_yaw
+        pitch += event_pitch
+        tilt += event_tilt
+    return yaw, pitch, tilt
+
+
+def neck_overlay_offsets(
+    t_ms: float,
+    neck_stretch_events: Sequence[NeckStretchEvent],
+    speech_motion_events: Sequence[SpeechMotionEvent],
+) -> tuple[float, float, float]:
+    stretch_yaw, stretch_pitch, stretch_tilt = neck_stretch_offsets(t_ms, neck_stretch_events)
+    speech_yaw, speech_pitch, speech_tilt = speech_motion_offsets(t_ms, speech_motion_events)
+    return (
+        stretch_yaw + speech_yaw,
+        stretch_pitch + speech_pitch,
+        stretch_tilt + speech_tilt,
+    )
+
+
 def merged_curve_end_ms(
     yaw_curve: YawTargetCurve,
     pitch_curve: YawTargetCurve,
     blink_events: Sequence[BlinkEvent] = (),
     neck_stretch_events: Sequence[NeckStretchEvent] = (),
+    speech_motion_events: Sequence[SpeechMotionEvent] = (),
 ) -> float:
     return max(
         yaw_curve.end_ms,
         pitch_curve.end_ms,
         *(blink_event_render_end_ms(event) for event in blink_events),
         *(neck_stretch_event_end_ms(event) for event in neck_stretch_events),
+        *(speech_motion_event_end_ms(event) for event in speech_motion_events),
     )
 
 
@@ -576,6 +668,7 @@ def sample_ms_for_merged_script(
     pitch_curve: YawTargetCurve,
     blink_events: Sequence[BlinkEvent] = (),
     neck_stretch_events: Sequence[NeckStretchEvent] = (),
+    speech_motion_events: Sequence[SpeechMotionEvent] = (),
 ) -> float:
     if channel_count <= 0:
         raise ValueError("channel_count must be > 0")
@@ -588,6 +681,7 @@ def sample_ms_for_merged_script(
                 pitch_curve,
                 blink_events,
                 neck_stretch_events,
+                speech_motion_events,
             )
             / max_frames
         ),
@@ -736,9 +830,11 @@ def render_gaze_corners_curves(
     eyelid_offset: float = -2.0,
     blink_events: Sequence[BlinkEvent] = (),
     neck_stretch_events: Sequence[NeckStretchEvent] = (),
+    speech_motion_events: Sequence[SpeechMotionEvent] = (),
 ) -> tuple[RenderedAnimation, tuple[GazeCornerSample, ...]]:
     config = config or GazeCornersConfig()
-    if neck_stretch_events:
+    has_neck_overlays = bool(neck_stretch_events or speech_motion_events)
+    if has_neck_overlays:
         render_channels = (
             GAZE_TO_STRETCH_CHANNELS
             if include_eyelids
@@ -778,7 +874,15 @@ def render_gaze_corners_curves(
         validate_channel_angle("eyelid_right", event.closed_angle, "blink closed angle")
     for event in neck_stretch_events:
         validate_neck_stretch_event(event)
-    render_end_ms = merged_curve_end_ms(yaw_curve, pitch_curve, blink_events, neck_stretch_events)
+    for event in speech_motion_events:
+        validate_speech_motion_event(event)
+    render_end_ms = merged_curve_end_ms(
+        yaw_curve,
+        pitch_curve,
+        blink_events,
+        neck_stretch_events,
+        speech_motion_events,
+    )
 
     if initial_state is None:
         eye_yaw = 0.0
@@ -847,9 +951,10 @@ def render_gaze_corners_curves(
         interval_ms = min(config.sample_ms, render_end_ms - t_ms)
         target_yaw = yaw_curve.sample(t_ms)
         target_pitch = pitch_curve.sample(t_ms)
-        stretch_yaw, stretch_pitch, stretch_tilt = neck_stretch_offsets(
+        overlay_yaw, overlay_pitch, overlay_tilt = neck_overlay_offsets(
             t_ms + interval_ms,
             neck_stretch_events,
+            speech_motion_events,
         )
 
         eye_yaw_min = max(CHANNELS["eye_leftright"].min_angle, -config.eye_yaw_limit_deg)
@@ -869,7 +974,7 @@ def render_gaze_corners_curves(
             max_speed_dps=config.neck_yaw_max_speed_dps,
         )
         stretch_yaw_target = clamp(
-            stretch_yaw,
+            overlay_yaw,
             neck_yaw_min - base_neck_yaw,
             neck_yaw_max - base_neck_yaw,
         )
@@ -902,7 +1007,7 @@ def render_gaze_corners_curves(
             max_speed_dps=config.neck_pitch_max_speed_dps,
         )
         stretch_pitch_target = clamp(
-            stretch_pitch,
+            overlay_pitch,
             neck_pitch_min - base_neck_pitch,
             neck_pitch_max - base_neck_pitch,
         )
@@ -920,7 +1025,7 @@ def render_gaze_corners_curves(
         )
         stretch_tilt_min = CHANNELS["neck_tilt"].min_angle - base_neck_tilt
         stretch_tilt_max = CHANNELS["neck_tilt"].max_angle - base_neck_tilt
-        stretch_tilt_target = clamp(stretch_tilt, stretch_tilt_min, stretch_tilt_max)
+        stretch_tilt_target = clamp(overlay_tilt, stretch_tilt_min, stretch_tilt_max)
         stretch_neck_tilt = step_first_order(
             current=stretch_neck_tilt,
             target=stretch_tilt_target,

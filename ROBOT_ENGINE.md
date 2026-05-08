@@ -135,3 +135,14 @@ gränser reduceras nack-offseten hellre än att target tappas.
 Stretchen använder större amplituder och snabbare stretch-respons än vanlig
 gaze, så den ska läsa mer som fabriksappens neck-stretch utan att lämna roboten
 i neutral blick efteråt.
+
+## Speech motion
+
+När dashboarden spelar ljud köar face-follow-loopen korta `speech`-chunks i
+`RobotEngine` så länge ljudprocessen kör. Det är avsiktligt inte ett långt
+script för hela ljudfilen: om användaren väljer ett nytt ljud kan gammal
+huvudrörelse bara leva kvar en kort chunk.
+
+Speech motion är ett nack-overlay på samma nivå som stretch. Det kan renderas
+tillsammans med gaze och blink, och ögonen kompenserar nackens yaw/pitch så att
+blickmålet fortsätter vara samma punkt.

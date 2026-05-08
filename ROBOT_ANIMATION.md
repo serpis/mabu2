@@ -136,6 +136,29 @@ Stretch-offseten har en egen snabbare nackrespons än vanlig gaze. Vanlig
 gaze får alltså behålla sin långsamma nackföljning, medan stretch faktiskt når
 fram till tydliga nackvändningar innan den går tillbaka.
 
+## Speech motion
+
+Speech motion använder samma gaze-preserving nack-overlay-lager som stretch,
+men med små, korta och kontinuerligt chunkade offsets för prat:
+
+```text
+neck_rotation  +/-3.0 deg
+neck_elevation +/-2.2 deg
+neck_tilt      +/-2.0 deg
+```
+
+Ljud-dashboarden startar inte någon egen motorstyrning. Den markerar bara att
+ljud spelas; `RobotEngine` bakar sedan in korta speech-motion chunks i nästa
+timeline-render. Renderingen använder fortsatt:
+
+```text
+eye = target_gaze - actual_neck
+```
+
+Det betyder att samma blickmål behålls även när pratlagret flyttar nacken.
+Eftersom rörelsen chunkas kan nytt ljud avbryta gammalt ljud utan att roboten
+fastnar i en lång, redan renderad huvudrörelse.
+
 ## Yaw-gaze med ögon först
 
 För naturlig blick i yaw-led beskriver lagret först en targetkurva:
