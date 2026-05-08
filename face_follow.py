@@ -121,6 +121,10 @@ class SharedCameraMjpegServer:
         self.camera.set_marker_enabled(target_mode == TARGET_MODE_MARKERS)
         self.expression_lock = threading.Lock()
         self.eyelid_offset = eyelid_offset
+        self.pose_lock = threading.Lock()
+        self.pending_reset_pose = False
+        self.reset_pose_requested_at: float | None = None
+        self.reset_pose_sent_at: float | None = None
         self.sound_dir = Path(__file__).resolve().parent / "sound"
         self.sound_lock = threading.Lock()
         self.sound_process: subprocess.Popen | None = None
@@ -152,6 +156,16 @@ class SharedCameraMjpegServer:
         with self.calibration_lock:
             if self.pending_manual_gaze is None:
                 self.pending_manual_gaze = target
+
+    def pop_pending_reset_pose(self) -> bool:
+        with self.pose_lock:
+            pending = self.pending_reset_pose
+            self.pending_reset_pose = False
+            return pending
+
+    def mark_reset_pose_sent(self) -> None:
+        with self.pose_lock:
+            self.reset_pose_sent_at = time.time()
 
     def start(self) -> None:
         if self.port <= 0 or self.thread is not None:
@@ -215,6 +229,7 @@ class SharedCameraMjpegServer:
                         "gaze": self._gaze_state(),
                         "target_mode": self._target_state(),
                         "expression": self._expression_state(),
+                        "pose": self._pose_state(),
                         "sound": self._sound_state(),
                         "settings": self._settings_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
@@ -261,6 +276,14 @@ class SharedCameraMjpegServer:
                 body = self._handle_expression_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._expression_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/pose"):
+            try:
+                body = self._handle_pose_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._pose_state()}
             self._send_json(conn, body)
             return
 
@@ -365,6 +388,33 @@ class SharedCameraMjpegServer:
     def _expression_state(self) -> dict:
         with self.expression_lock:
             return {"eyelid_offset": self.eyelid_offset}
+
+    def _pose_state(self) -> dict:
+        with self.pose_lock:
+            return {
+                "reset_pending": self.pending_reset_pose,
+                "reset_requested_at": self.reset_pose_requested_at,
+                "reset_sent_at": self.reset_pose_sent_at,
+            }
+
+    def _handle_pose_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._pose_state()
+
+        if action in {"reset", "reset_pose", "reset-pose"}:
+            now = time.time()
+            with self.pose_lock:
+                self.pending_reset_pose = True
+                self.reset_pose_requested_at = now
+            with self.calibration_lock:
+                self.pending_manual_gaze = None
+            return {"status": "queued", **self._pose_state()}
+
+        return {"error": f"unknown pose action: {action}", **self._pose_state()}
 
     def _settings_values(self) -> dict:
         with self.gaze_lock:
@@ -959,6 +1009,11 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
       <div class="row"><div class="k">mode</div><div class="v" id="gazeMode">-</div></div>
     </div>
     <div class="panel">
+      <h1>Robot</h1>
+      <div class="controls"><button id="resetPose" class="secondary">Reset Pose</button></div>
+      <div class="row"><div class="k">pose</div><div class="v" id="poseState">-</div></div>
+    </div>
+    <div class="panel">
       <h1>Expression</h1>
       <div class="row"><div class="k">brow height</div><div class="v"><input id="eyelidOffset" type="number" min="-30" max="30" step="0.5" value="-2.0"></div></div>
       <div class="row"><div class="k">state</div><div class="v" id="expressionState">-</div></div>
@@ -1014,6 +1069,7 @@ function renderPiTemp(value){
 const manualMode=document.getElementById("manualMode");
 const markerTarget=document.getElementById("markerTarget");
 const animationGaze=document.getElementById("animationGaze");
+const resetPose=document.getElementById("resetPose");
 const eyelidOffset=document.getElementById("eyelidOffset");
 const idleBlink=document.getElementById("idleBlink");
 const blinkInterval=document.getElementById("blinkInterval");
@@ -1074,6 +1130,24 @@ function renderGaze(g){
   if(!g)return;
   animationGaze.checked=g.mode !== "direct_pose";
   document.getElementById("gazeMode").textContent=g.mode || "-";
+}
+async function pose(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/pose?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderPose(d);
+  return d;
+}
+function renderPose(p){
+  if(!p)return;
+  const el=document.getElementById("poseState");
+  if(p.reset_pending){
+    el.textContent="reset queued";
+  }else if(Number.isFinite(p.reset_sent_at)){
+    el.textContent=`reset ${new Date(p.reset_sent_at * 1000).toLocaleTimeString()}`;
+  }else{
+    el.textContent="idle";
+  }
 }
 async function target(action, extra={}){
   const p=new URLSearchParams({action, ...extra});
@@ -1211,6 +1285,7 @@ async function tick(){
     renderPiTemp(d.pi_temperature_c);
     renderTarget(d.target_mode);
     renderGaze(d.gaze);
+    renderPose(d.pose);
     renderExpression(d.expression);
     renderBlink(d.blink);
     renderSound(d.sound);
@@ -1222,6 +1297,9 @@ async function tick(){
 }
 markerTarget.addEventListener("change",()=>target("set",{mode:markerTarget.checked ? "markers" : "faces"}));
 animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.checked ? "animation_engine" : "direct_pose"}));
+resetPose.addEventListener("click",()=>pose("reset").catch(()=>{
+  document.getElementById("poseState").textContent="reset failed";
+}));
 eyelidOffset.addEventListener("change",()=>expression("set",expressionValues()));
 idleBlink.addEventListener("change",()=>blink("set",blinkValues()));
 blinkInterval.addEventListener("change",()=>blink("set",blinkValues()));
@@ -1896,6 +1974,14 @@ def run(args: argparse.Namespace) -> int:
                 applied_speech_motion_amplitude,
             )
             sound_running = mjpeg_server.is_sound_running()
+            if mjpeg_server.pop_pending_reset_pose():
+                engine.reset_pose()
+                mjpeg_server.mark_reset_pose_sent()
+                last_sent_at = now
+                last_target = (0.0, 0.0)
+                next_auto_blink_at = now + blink_interval_s
+                time.sleep(args.loop_sleep)
+                continue
             engine.maybe_start_next()
             gaze_mode = mjpeg_server.gaze_mode_snapshot()
             target_mode = mjpeg_server.target_mode_snapshot()

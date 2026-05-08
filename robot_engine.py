@@ -336,6 +336,8 @@ class RobotEngine:
         self.robot.open()
         self.send_wire_command(STARTUP_COMMANDS[0], expected_duration_s=STARTUP_COMMANDS[0].delay_after)
         self.pump_for(STARTUP_COMMANDS[0].delay_after)
+        reset_command = self.reset_pose()
+        self.pump_for(reset_command.delay_after)
         self.refresh_pose()
         self.state = BoardState.IDLE
         self.log("engine ready. Type 'help' for commands.")
@@ -360,6 +362,17 @@ class RobotEngine:
 
     def send_rendered_command(self, command: Command, *, script_duration_s: float) -> None:
         self.send_wire_command(command, expected_duration_s=script_duration_s)
+
+    def reset_pose(self) -> Command:
+        self.gaze_events.clear()
+        self.blink_events.clear()
+        self.neck_stretch_events.clear()
+        self.speech_motion_events.clear()
+        self.next_idle_blink_at = time.monotonic() + self.config.blink_interval_s
+        command = look_pose_command(0.0, 0.0, self.config.eyelid_offset)
+        self.send_wire_command(command, expected_duration_s=command.delay_after)
+        self.log("reset pose sent")
+        return command
 
     def send_direct_gaze(self, yaw: float, pitch: float) -> Command:
         """Send a one-frame gaze pose immediately, bypassing the timeline."""
@@ -919,10 +932,12 @@ class RobotEngine:
             elif command == "help":
                 self.log(
                     "commands: gaze YAW[,PITCH] [MS] | gaze YAW PITCH [MS] | "
-                    "blink | stretch | speech [MS] | idle on|off | interval SEC | status | quit"
+                    "blink | stretch | speech [MS] | reset | idle on|off | interval SEC | status | quit"
                 )
             elif command == "status":
                 self.print_status()
+            elif command in {"reset", "reset-pose", "reset_pose"}:
+                self.reset_pose()
             elif command == "blink":
                 event = self.schedule_manual_blink()
                 if event is None:

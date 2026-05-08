@@ -937,7 +937,8 @@ def render_gaze_corners_curves(
             CHANNELS["eyelid_right"].min_angle,
             CHANNELS["eyelid_right"].max_angle,
         )
-    base_neck_tilt = neck_tilt
+    speech_resets_neck_tilt = bool(speech_motion_events)
+    base_neck_tilt = 0.0 if speech_resets_neck_tilt else neck_tilt
     base_neck_yaw = neck_yaw
     base_neck_pitch = neck_pitch
     stretch_neck_yaw = 0.0
@@ -956,6 +957,7 @@ def render_gaze_corners_curves(
             neck_stretch_events,
             speech_motion_events,
         )
+        force_neck_tilt_zero = speech_resets_neck_tilt and t_ms + interval_ms >= render_end_ms - 1e-6
 
         eye_yaw_min = max(CHANNELS["eye_leftright"].min_angle, -config.eye_yaw_limit_deg)
         eye_yaw_max = min(CHANNELS["eye_leftright"].max_angle, config.eye_yaw_limit_deg)
@@ -1033,11 +1035,15 @@ def render_gaze_corners_curves(
             dt_ms=interval_ms,
             max_speed_dps=config.neck_tilt_max_speed_dps,
         )
-        neck_tilt = clamp(
-            base_neck_tilt + stretch_neck_tilt,
-            CHANNELS["neck_tilt"].min_angle,
-            CHANNELS["neck_tilt"].max_angle,
-        )
+        if force_neck_tilt_zero:
+            stretch_neck_tilt = 0.0
+            neck_tilt = 0.0
+        else:
+            neck_tilt = clamp(
+                base_neck_tilt + stretch_neck_tilt,
+                CHANNELS["neck_tilt"].min_angle,
+                CHANNELS["neck_tilt"].max_angle,
+            )
 
         desired_eye_yaw = clamp(target_yaw - neck_yaw, eye_yaw_min, eye_yaw_max)
         eye_yaw = step_first_order(

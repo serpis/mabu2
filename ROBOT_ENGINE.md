@@ -91,6 +91,12 @@ Boarden betraktas som idle när tiden har passerat och feedback varit tyst en
 kort stund. Om feedback beter sig konstigt finns en fallback-timeout så engine
 inte fastnar i `settling`.
 
+## Reset Pose
+
+Vid uppstart och via dashboardens `Reset Pose` skickar engine en omedelbar
+all-channel pose mot centrerad gaze. Reset rensar pending gaze-, blink-,
+neck-stretch- och speech-events innan posen skickas.
+
 ## Blink
 
 Idle-blinkar schemaläggs ungefär var `--blink-interval` sekund när roboten är
@@ -152,3 +158,6 @@ huvudrörelse bara leva kvar en kort chunk.
 Speech motion är ett nack-overlay på samma nivå som stretch. Det kan renderas
 tillsammans med gaze och blink, och ögonen kompenserar nackens yaw/pitch så att
 blickmålet fortsätter vara samma punkt.
+
+Eftersom inget annat lager äger `neck_tilt` tvingar speech-renderingen sista
+keyframen till tilt 0, så roboten inte kan fastna i en sned tilt efter prat.
