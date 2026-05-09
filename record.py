@@ -158,34 +158,34 @@ def parse_args() -> argparse.Namespace:
 def parse_uart_mode(text: str) -> UartMode:
     text = text.strip().upper()
     if len(text) < 3:
-        raise ValueError(f"Ogiltigt UART-läge: {text!r}")
+        raise ValueError(f"Invalid UART mode: {text!r}")
 
     data_bits_text = text[0]
     parity_letter = text[1]
     stop_bits_text = text[2:]
 
     if not data_bits_text.isdigit():
-        raise ValueError(f"Ogiltigt antal databitar i UART-läge: {text!r}")
+        raise ValueError(f"Invalid data bit count in UART mode: {text!r}")
     if parity_letter not in PARITY_MAP:
         raise ValueError(
-            f"Ogiltig paritet i UART-läge: {text!r}. Använd N, E, O, M eller S."
+            f"Invalid parity in UART mode: {text!r}. Use N, E, O, M, or S."
         )
 
     try:
         data_bits = int(data_bits_text)
     except ValueError as exc:
-        raise ValueError(f"Ogiltigt UART-läge: {text!r}") from exc
+        raise ValueError(f"Invalid UART mode: {text!r}") from exc
 
     if data_bits < 5 or data_bits > 9:
         raise ValueError(
-            f"Ogiltigt antal databitar i UART-läge: {text!r}. Stöd: 5-9."
+            f"Invalid data bit count in UART mode: {text!r}. Supported: 5-9."
         )
 
     try:
         stop_bits_value = float(stop_bits_text)
     except ValueError as exc:
         raise ValueError(
-            f"Ogiltigt antal stoppbitar i UART-läge: {text!r}"
+            f"Invalid stop bit count in UART mode: {text!r}"
         ) from exc
 
     return UartMode(
@@ -291,9 +291,9 @@ def capture_to_sr(
     else:
         cmd.append("--continuous")
 
-    print(f"Samplar till {sr_path} med {samplerate_text}...", file=sys.stderr)
+    print(f"Sampling to {sr_path} at {samplerate_text}...", file=sys.stderr)
     if not args.capture_time:
-        print("Tryck Ctrl-C när du vill stoppa inspelningen.", file=sys.stderr)
+        print("Press Ctrl-C when you want to stop recording.", file=sys.stderr)
 
     proc = subprocess.Popen(
         cmd,
@@ -379,17 +379,17 @@ def load_trace_from_import(
     mode: UartMode,
 ) -> tuple[dict[str, Any], str, int, Path]:
     if args.input_file is None:
-        raise RuntimeError("Intern fel: load_trace_from_import anropades utan input-file.")
+        raise RuntimeError("Internal error: load_trace_from_import called without input-file.")
 
     if not args.decode_rx_name or not args.decode_tx_name:
         raise RuntimeError(
-            "--decode-rx-name och --decode-tx-name krävs när --input-file används."
+            "--decode-rx-name and --decode-tx-name are required when --input-file is used."
         )
 
     samplerate_hz = samplerate_to_hz(args.samplerate) if args.samplerate else 0
     if samplerate_hz <= 0:
         raise RuntimeError(
-            "När --input-file används måste --samplerate anges så att tider kan räknas ut."
+            "When --input-file is used, --samplerate must be set so timestamps can be computed."
         )
 
     trace = decode_trace(
@@ -593,11 +593,11 @@ def maybe_prompt_for_names(
     if not enabled or not sequences or not sys.stdin.isatty():
         return
 
-    print("\nNamnge sekvenserna. Tryck Enter för att behålla standardnamnet.\n")
+    print("\nName the sequences. Press Enter to keep the default name.\n")
     for sequence in sequences:
         default_name = sequence["name"]
         summary = summarize_sequence(sequence)
-        prompt = f"{default_name} ({sequence['byte_count']} bytes) {summary}\nNamn: "
+        prompt = f"{default_name} ({sequence['byte_count']} bytes) {summary}\nName: "
         try:
             name = input(prompt).strip()
         except EOFError:
@@ -729,11 +729,11 @@ def main() -> int:
     write_json(output_json, payload)
 
     print(
-        f"Skrev RX={len(rx_bytes)} och TX={len(tx_bytes)} bytes till {output_json}",
+        f"Wrote RX={len(rx_bytes)} and TX={len(tx_bytes)} bytes to {output_json}",
         file=sys.stderr,
     )
     if sr_sidecar_path is not None:
-        print(f"Rå sigrok-capture sparad i {sr_sidecar_path}", file=sys.stderr)
+        print(f"Raw sigrok capture saved to {sr_sidecar_path}", file=sys.stderr)
     return 0
 
 
@@ -741,5 +741,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"Fel: {exc}", file=sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1)

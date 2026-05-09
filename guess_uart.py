@@ -222,7 +222,7 @@ def parse_samplerate(text: str) -> int:
     elif unit in {"ghz", "gsps"}:
         scale = 1_000_000_000
     else:
-        raise ValueError(f"Okänd samplerate-enhet: {text!r}")
+        raise ValueError(f"Unknown samplerate unit: {text!r}")
     return int(value * scale)
 
 
@@ -238,7 +238,7 @@ def load_capture(path: Path) -> tuple[int, list[ChannelInfo], bytes]:
         total_probes = int(device["total probes"])
         unitsize = int(device.get("unitsize", "1"))
         if unitsize != 1:
-            raise ValueError(f"Stöder bara unitsize=1, fick {unitsize}.")
+            raise ValueError(f"Only unitsize=1 is supported, got {unitsize}.")
 
         channels: list[ChannelInfo] = []
         for probe_number in range(1, total_probes + 1):
@@ -268,7 +268,7 @@ def load_capture(path: Path) -> tuple[int, list[ChannelInfo], bytes]:
 
 def build_channel_traces(raw: bytes, channels: list[ChannelInfo]) -> list[ChannelTrace]:
     if not raw:
-        raise ValueError("Capture-filen innehåller inga samples.")
+        raise ValueError("Capture file contains no samples.")
 
     total_samples = len(raw)
     transitions: list[list[int]] = [[] for _ in channels]
@@ -322,7 +322,7 @@ def resolve_channels(
             if trace.info.label.lower() in wanted or trace.info.short_name.lower() in wanted
         ]
         if not selected:
-            raise ValueError(f"Inga matchande kanaler hittades för {selectors!r}.")
+            raise ValueError(f"No matching channels found for {selectors!r}.")
         return selected
 
     rx_like = [
@@ -607,7 +607,7 @@ def rank_channel_guesses(
 def print_capture_summary(path: Path, samplerate_hz: int, traces: list[ChannelTrace]) -> None:
     print(f"Fil: {path}")
     print(f"Samplerate: {samplerate_hz} Hz")
-    print("Kanaler:")
+    print("Channels:")
     for trace in traces:
         high_ratio = trace.high_samples / trace.total_samples if trace.total_samples else 0.0
         print(
@@ -618,14 +618,14 @@ def print_capture_summary(path: Path, samplerate_hz: int, traces: list[ChannelTr
 
 def print_ranked_guesses(trace: ChannelTrace, guesses: list[DecodeGuess], top: int) -> None:
     print()
-    print(f"Kanal {trace.info.display_name}")
+    print(f"Channel {trace.info.display_name}")
     if not guesses:
-        print("  Inga rimliga UART-kandidater hittades.")
+        print("  No plausible UART candidates found.")
         return
 
     best = guesses[0]
     print(
-        f"  Bästa gissning: {best.baudrate} {best.mode_text} "
+        f"  Best guess: {best.baudrate} {best.mode_text} "
         f"({best.invert_text}), score={best.score:.1f}"
     )
 
@@ -651,7 +651,7 @@ def main() -> int:
         if args.min_baud <= baudrate <= args.max_baud and samplerate_hz / baudrate >= 2.0
     ]
     if not baudrates:
-        raise ValueError("Ingen baudrate kvar efter vald min/max-gräns.")
+        raise ValueError("No baud rates remain after the selected min/max range.")
     modes = FULL_MODES if args.exhaustive else COMMON_MODES
 
     print_capture_summary(input_sr, samplerate_hz, selected)

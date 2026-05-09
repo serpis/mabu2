@@ -125,6 +125,10 @@ class SharedCameraMjpegServer:
         self.pending_reset_pose = False
         self.reset_pose_requested_at: float | None = None
         self.reset_pose_sent_at: float | None = None
+        self.system_lock = threading.Lock()
+        self.halt_requested_at: float | None = None
+        self.halt_spawned_at: float | None = None
+        self.halt_error: str | None = None
         self.sound_dir = Path(__file__).resolve().parent / "sound"
         self.sound_lock = threading.Lock()
         self.sound_process: subprocess.Popen | None = None
@@ -230,6 +234,7 @@ class SharedCameraMjpegServer:
                         "target_mode": self._target_state(),
                         "expression": self._expression_state(),
                         "pose": self._pose_state(),
+                        "system": self._system_state(),
                         "sound": self._sound_state(),
                         "settings": self._settings_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
@@ -284,6 +289,14 @@ class SharedCameraMjpegServer:
                 body = self._handle_pose_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._pose_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/system"):
+            try:
+                body = self._handle_system_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._system_state()}
             self._send_json(conn, body)
             return
 
@@ -415,6 +428,49 @@ class SharedCameraMjpegServer:
             return {"status": "queued", **self._pose_state()}
 
         return {"error": f"unknown pose action: {action}", **self._pose_state()}
+
+    def _system_state(self) -> dict:
+        with self.system_lock:
+            return {
+                "halt_requested_at": self.halt_requested_at,
+                "halt_spawned_at": self.halt_spawned_at,
+                "halt_error": self.halt_error,
+            }
+
+    def _handle_system_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._system_state()
+
+        if action == "halt":
+            now = time.time()
+            with self.system_lock:
+                self.halt_requested_at = now
+                self.halt_spawned_at = None
+                self.halt_error = None
+            threading.Thread(target=self._run_halt_after_response, daemon=True).start()
+            return {"status": "queued", **self._system_state()}
+
+        return {"error": f"unknown system action: {action}", **self._system_state()}
+
+    def _run_halt_after_response(self) -> None:
+        time.sleep(0.35)
+        try:
+            subprocess.Popen(
+                ("sudo", "-n", "halt"),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            with self.system_lock:
+                self.halt_error = str(exc)
+        else:
+            with self.system_lock:
+                self.halt_spawned_at = time.time()
 
     def _settings_values(self) -> dict:
         with self.gaze_lock:
@@ -961,12 +1017,14 @@ h1{font-size:16px;margin:12px 14px}
 button,input{font:inherit}
 button{background:#2f6fed;color:white;border:0;border-radius:4px;padding:7px 10px;margin:4px 4px 4px 0}
 button.secondary{background:#333}
+button.danger{background:#a52727}
 label{display:block;margin:8px 14px;color:#c9c9c9}
 .row{display:grid;grid-template-columns:120px 1fr;gap:8px;padding:4px 14px;border-top:1px solid #252525}
 .k{color:#9ca3af}
 .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .panel{border-top:1px solid #333;padding:8px 0}
 .controls{padding:4px 14px}
+.top-controls{display:flex;align-items:center;gap:8px;padding:0 14px 8px}
 .sound-list{display:flex;flex-wrap:wrap;gap:6px}
 .sound-list button{margin:0}
 .sound-empty{color:#9ca3af}
@@ -990,6 +1048,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
   <section class="video"><img src="/stream" alt="Annotated camera stream"></section>
   <aside>
     <h1>Face Follow Debug</h1>
+    <div class="top-controls"><button id="haltSystem" class="danger">sudo halt</button><span class="v" id="systemState">-</span></div>
     <div class="row"><div class="k">state</div><div class="v" id="state">-</div></div>
     <div class="row"><div class="k">frame</div><div class="v" id="frame">-</div></div>
     <div class="row"><div class="k">age ms</div><div class="v" id="age">-</div></div>
@@ -1025,7 +1084,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
       <div class="row"><div class="k">state</div><div class="v" id="blinkState">-</div></div>
     </div>
     <div class="panel">
-      <h1>Ljud</h1>
+      <h1>Sound</h1>
       <div class="row"><div class="k">volume</div><div class="v"><input id="soundVolume" type="range" min="0" max="100" step="1" value="90"> <span id="soundVolumeValue">90%</span></div></div>
       <div class="row"><div class="k">head move</div><div class="v"><input id="speechMotionAmplitude" type="range" min="0" max="300" step="5" value="100"> <span id="speechMotionAmplitudeValue">100%</span></div></div>
       <div class="controls sound-list" id="soundList"></div>
@@ -1070,6 +1129,7 @@ const manualMode=document.getElementById("manualMode");
 const markerTarget=document.getElementById("markerTarget");
 const animationGaze=document.getElementById("animationGaze");
 const resetPose=document.getElementById("resetPose");
+const haltSystem=document.getElementById("haltSystem");
 const eyelidOffset=document.getElementById("eyelidOffset");
 const idleBlink=document.getElementById("idleBlink");
 const blinkInterval=document.getElementById("blinkInterval");
@@ -1147,6 +1207,26 @@ function renderPose(p){
     el.textContent=`reset ${new Date(p.reset_sent_at * 1000).toLocaleTimeString()}`;
   }else{
     el.textContent="idle";
+  }
+}
+async function system(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/system?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderSystem(d);
+  return d;
+}
+function renderSystem(s){
+  if(!s)return;
+  const el=document.getElementById("systemState");
+  if(s.halt_error){
+    el.textContent=`halt error: ${s.halt_error}`;
+  }else if(Number.isFinite(s.halt_spawned_at)){
+    el.textContent=`halt sent ${new Date(s.halt_spawned_at * 1000).toLocaleTimeString()}`;
+  }else if(Number.isFinite(s.halt_requested_at)){
+    el.textContent="halt queued";
+  }else{
+    el.textContent="-";
   }
 }
 async function target(action, extra={}){
@@ -1286,6 +1366,7 @@ async function tick(){
     renderTarget(d.target_mode);
     renderGaze(d.gaze);
     renderPose(d.pose);
+    renderSystem(d.system);
     renderExpression(d.expression);
     renderBlink(d.blink);
     renderSound(d.sound);
@@ -1300,6 +1381,14 @@ animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.check
 resetPose.addEventListener("click",()=>pose("reset").catch(()=>{
   document.getElementById("poseState").textContent="reset failed";
 }));
+haltSystem.addEventListener("click",()=>{
+  if(!confirm("Shut down Raspberry Pi with sudo halt?"))return;
+  haltSystem.disabled=true;
+  system("halt").catch(()=>{
+    document.getElementById("systemState").textContent="halt failed";
+    haltSystem.disabled=false;
+  });
+});
 eyelidOffset.addEventListener("change",()=>expression("set",expressionValues()));
 idleBlink.addEventListener("change",()=>blink("set",blinkValues()));
 blinkInterval.addEventListener("change",()=>blink("set",blinkValues()));
@@ -1339,7 +1428,7 @@ gazePad.addEventListener("pointerdown",(ev)=>{
 document.getElementById("apply").addEventListener("click",()=>cal("set",{...manualValues(),apply:"1"}));
 document.getElementById("record").addEventListener("click",()=>cal("record",manualValues()));
 document.getElementById("clearCalibration").addEventListener("click",()=>{
-  if(confirm("\\u00c4r du s\\u00e4ker?")){
+  if(confirm("Are you sure?")){
     cal("clear").catch(()=>{});
   }
 });

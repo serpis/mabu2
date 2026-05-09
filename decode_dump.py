@@ -135,7 +135,7 @@ def resolve_input_path(path: Path | None) -> Path:
             return candidate
 
     raise FileNotFoundError(
-        "Hittade ingen default-input. Ange sökvägen till dump.json explicit."
+        "No default input found. Pass the path to dump.json explicitly."
     )
 
 
@@ -229,7 +229,7 @@ def infer_sync(direction: str, entries: list[dict[str, Any]]) -> ScanResult:
             best = result
 
     if best is None or not best.packets:
-        raise ValueError(f"Kunde inte hitta någon rimlig packetisering för {direction}.")
+        raise ValueError(f"Could not find any plausible packetization for {direction}.")
     return best
 
 
@@ -1015,13 +1015,13 @@ def build_result(input_path: Path, calibration_dir: Path | None) -> dict[str, An
 
 def fmt_rate(rate: float | None) -> str:
     if rate is None:
-        return "okänd"
+        return "unknown"
     return f"{rate:.2f} Hz"
 
 
 def format_family(family: dict[str, Any], tx_channel_names: dict[int, str]) -> str:
     lines = [
-        f"- {family['label']}: {family['count']} paket, payload_len={family['payload_length']}",
+        f"- {family['label']}: {family['count']} packets, payload_len={family['payload_length']}",
     ]
     for field in family["field_stats"]:
         field_name = ""
@@ -1179,13 +1179,13 @@ def print_text_summary(result: dict[str, Any], show_packets: int) -> None:
 
     print("Directions")
     print(
-        f"- RX: {rx_direction['packet_count']} paket, {rx_direction['consumed_bytes']} bytes, "
+        f"- RX: {rx_direction['packet_count']} packets, {rx_direction['consumed_bytes']} bytes, "
         f"{fmt_rate(rx_direction['rate_hz'])}"
     )
     for family in rx_direction["families"]:
         print(format_family(family, tx_channel_names))
     print(
-        f"- TX: {tx_direction['packet_count']} paket, {tx_direction['consumed_bytes']} bytes, "
+        f"- TX: {tx_direction['packet_count']} packets, {tx_direction['consumed_bytes']} bytes, "
         f"{fmt_rate(tx_direction['rate_hz'])}"
     )
     for family in tx_direction["families"]:
@@ -1221,10 +1221,10 @@ def print_text_summary(result: dict[str, Any], show_packets: int) -> None:
     tx_rate = tx_direction["rate_hz"]
     if correlation is not None and rx_rate and tx_rate and tx_rate > rx_rate:
         print("Interpretation")
-        print("- RX ser ut som kommenderat målvärde per mask/adress.")
+        print("- RX appears to be the commanded target value per mask/address.")
         print(
-            f"- TX ser ut som återrapporterad position: {tx_rate / rx_rate:.2f}x högre uppdateringsfrekvens "
-            "och värdet glider mot RX-värdet i mellanliggande snapshots."
+            f"- TX appears to be reported position feedback: {tx_rate / rx_rate:.2f}x higher update rate "
+            "and the value moves toward the RX value in intermediate snapshots."
         )
         print()
 
