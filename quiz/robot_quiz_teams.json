@@ -1,0 +1,28 @@
+{
+  "players": [
+    {
+      "id": "team_1",
+      "name": "Lag ett",
+      "answers": {
+        "A": 0,
+        "B": 1
+      }
+    },
+    {
+      "id": "team_2",
+      "name": "Lag två",
+      "answers": {
+        "A": 2,
+        "B": 3
+      }
+    },
+    {
+      "id": "team_3",
+      "name": "Lag tre",
+      "answers": {
+        "A": 4,
+        "B": 5
+      }
+    }
+  ]
+}

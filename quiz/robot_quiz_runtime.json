@@ -1,0 +1,14 @@
+{
+  "start_marker_id": 7,
+  "default_next_mode": "idle",
+  "settings": {
+    "stable_start_s": 0.8,
+    "stable_registration_s": 0.8,
+    "registration_timeout_s": 5.0,
+    "stable_answer_s": 1.0,
+    "initial_timeout_s": 5.0,
+    "nudge_timeout_s": 4.0,
+    "after_prompt_delay_s": 1.0,
+    "next_question_delay_s": 1.0
+  }
+}

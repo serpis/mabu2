@@ -13,10 +13,21 @@ import socket
 import subprocess
 import threading
 import time
+import wave
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from camera.face_detect import BOUNDARY, FaceTrack, MarkerTrack, RpicamFaceTracker, TrackedFaceFrame
+from dialog_state import (
+    APP_MODE_ACTIVE,
+    APP_MODE_QUIZ,
+    APP_MODES,
+    AppController,
+    ObservationDecoder,
+    WorldState,
+    WorldStateBuilder,
+    load_quiz_config,
+)
 from robot_animation import (
     SPEECH_MOTION_DEFAULT_PITCH_DEG,
     SPEECH_MOTION_DEFAULT_TILT_DEG,
@@ -41,6 +52,14 @@ SOUND_USB_CARD_HINTS = ("JOUNIVO", "USB-Audio", "USB Audio")
 DEFAULT_SOUND_VOLUME_PERCENT = 90
 DEFAULT_SPEECH_MOTION_AMPLITUDE_PERCENT = 100
 MAX_SPEECH_MOTION_AMPLITUDE_PERCENT = 300
+DEFAULT_QUIZ_FILE = str(Path(__file__).resolve().parent / "quiz" / "robot_quiz.yaml")
+DEFAULT_QUIZ_RUNTIME_FILE = str(
+    Path(__file__).resolve().parent / "quiz" / "robot_quiz_runtime.json"
+)
+DEFAULT_QUIZ_TEAMS_FILE = str(Path(__file__).resolve().parent / "quiz" / "robot_quiz_teams.json")
+DEFAULT_QUIZ_SPEECH_FILE = str(
+    Path(__file__).resolve().parent / "quiz" / "robot_quiz_baked_speech.json"
+)
 SOUND_PLAYER_COMMANDS = (
     ("mpg123", ("mpg123", "-q", "{path}")),
     ("ffplay", ("ffplay", "-nodisp", "-autoexit", "-loglevel", "error", "{path}")),
@@ -65,6 +84,42 @@ def normalize_speech_motion_amplitude_percent(value: float | str) -> int:
     )
 
 
+def sound_clip_duration_s(path: Path) -> float | None:
+    if path.suffix.lower() == ".wav":
+        try:
+            with wave.open(str(path), "rb") as wav:
+                frame_rate = wav.getframerate()
+                if frame_rate <= 0:
+                    return None
+                return wav.getnframes() / frame_rate
+        except (OSError, EOFError, wave.Error):
+            return None
+
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        output = subprocess.check_output(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.0,
+        ).strip()
+        duration = float(output)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return duration if math.isfinite(duration) and duration > 0 else None
+
+
 def clamp_gaze_target(target: tuple[float, float]) -> tuple[float, float]:
     yaw, pitch = target
     return (
@@ -81,6 +136,11 @@ class SharedCameraMjpegServer:
         port: int,
         calibration_file: str,
         settings_file: str,
+        app_controller: AppController,
+        quiz_file: str,
+        quiz_runtime_file: str,
+        quiz_teams_file: str,
+        quiz_speech_file: str,
         idle_blink: bool,
         blink_interval_s: float,
         gaze_mode: str,
@@ -93,9 +153,23 @@ class SharedCameraMjpegServer:
         self.port = port
         self.calibration_file = Path(calibration_file)
         self.settings_file = Path(settings_file)
+        self.app_controller = app_controller
+        self.quiz_file = quiz_file
+        self.quiz_runtime_file = quiz_runtime_file
+        self.quiz_teams_file = quiz_teams_file
+        self.quiz_speech_file = quiz_speech_file
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.socket: socket.socket | None = None
+        self.app_lock = threading.Lock()
+        self.world_lock = threading.Lock()
+        self.world_debug: dict = {
+            "visible_marker_ids": [],
+            "stable_marker_ids": [],
+            "decoded_answers": {},
+            "start_marker_id": app_controller.config.start_marker_id,
+            "start_marker_stable": False,
+        }
         self.debug_lock = threading.Lock()
         self.debug_snapshot: dict = {
             "state": "starting",
@@ -118,7 +192,7 @@ class SharedCameraMjpegServer:
         self.gaze_mode = gaze_mode
         self.target_lock = threading.Lock()
         self.target_mode = target_mode
-        self.camera.set_marker_enabled(target_mode == TARGET_MODE_MARKERS)
+        self.camera.set_marker_enabled(self.marker_detection_required(target_mode))
         self.expression_lock = threading.Lock()
         self.eyelid_offset = eyelid_offset
         self.pose_lock = threading.Lock()
@@ -130,6 +204,7 @@ class SharedCameraMjpegServer:
         self.halt_spawned_at: float | None = None
         self.halt_error: str | None = None
         self.sound_dir = Path(__file__).resolve().parent / "sound"
+        self.sound_metadata_cache: dict[str, tuple[int, int, float | None]] = {}
         self.sound_lock = threading.Lock()
         self.sound_process: subprocess.Popen | None = None
         self.sound_volume_percent = normalize_sound_volume_percent(sound_volume_percent)
@@ -145,6 +220,43 @@ class SharedCameraMjpegServer:
     def set_debug(self, snapshot: dict) -> None:
         with self.debug_lock:
             self.debug_snapshot = snapshot
+
+    def set_world(self, world: WorldState) -> None:
+        with self.world_lock:
+            self.world_debug = world.as_debug(
+                stable_for_s=self.app_controller.config.stable_start_s,
+            )
+
+    def update_app(self, world: WorldState, robot, now: float) -> None:
+        with self.app_lock:
+            self.app_controller.update(world, robot, now)
+
+    def app_should_run_active_follow(self) -> bool:
+        with self.app_lock:
+            return self.app_controller.should_run_active_follow()
+
+    def marker_detection_required(self, target_mode: str | None = None) -> bool:
+        if target_mode is None:
+            with self.target_lock:
+                target_mode = self.target_mode
+        with self.app_lock:
+            return self.app_controller.marker_detection_required(target_mode)
+
+    def app_mode_snapshot(self) -> str:
+        with self.app_lock:
+            return self.app_controller.mode
+
+    def _app_state(self) -> dict:
+        with self.app_lock:
+            return self.app_controller.as_debug()
+
+    def _quiz_state(self) -> dict:
+        with self.app_lock:
+            return self.app_controller.quiz.as_debug()
+
+    def _world_state(self) -> dict:
+        with self.world_lock:
+            return dict(self.world_debug)
 
     def is_calibration_enabled(self) -> bool:
         with self.calibration_lock:
@@ -236,6 +348,9 @@ class SharedCameraMjpegServer:
                         "pose": self._pose_state(),
                         "system": self._system_state(),
                         "sound": self._sound_state(),
+                        "app": self._app_state(),
+                        "quiz": self._quiz_state(),
+                        "world": self._world_state(),
                         "settings": self._settings_state(),
                         "pi_temperature_c": read_pi_temperature_c(),
                         "served_at": time.time(),
@@ -297,6 +412,22 @@ class SharedCameraMjpegServer:
                 body = self._handle_system_request(path)
             except ValueError as exc:
                 body = {"error": str(exc), **self._system_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/app"):
+            try:
+                body = self._handle_app_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._app_state()}
+            self._send_json(conn, body)
+            return
+
+        if path.startswith("/quiz"):
+            try:
+                body = self._handle_quiz_request(path)
+            except ValueError as exc:
+                body = {"error": str(exc), **self._quiz_state()}
             self._send_json(conn, body)
             return
 
@@ -456,6 +587,67 @@ class SharedCameraMjpegServer:
 
         return {"error": f"unknown system action: {action}", **self._system_state()}
 
+    def _handle_app_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+
+        if action == "state":
+            return self._app_state()
+
+        if action in {"set_mode", "mode"}:
+            mode = params.get("mode", [None])[0]
+            if mode not in APP_MODES:
+                raise ValueError(f"app mode must be one of: {', '.join(sorted(APP_MODES))}")
+            with self.app_lock:
+                self.app_controller.set_mode(mode, time.monotonic())
+            self.camera.set_marker_enabled(self.marker_detection_required())
+            self._save_runtime_settings()
+            return self._app_state()
+
+        if action in {"set_auto_start", "auto_start"}:
+            enabled = params.get("enabled", [None])[0]
+            if enabled is None:
+                raise ValueError("missing enabled")
+            with self.app_lock:
+                self.app_controller.auto_start_quiz = enabled not in {"0", "false", "off", "no"}
+                self.app_controller.last_event = "auto_start_changed"
+            self.camera.set_marker_enabled(self.marker_detection_required())
+            self._save_runtime_settings()
+            return self._app_state()
+
+        return {"error": f"unknown app action: {action}", **self._app_state()}
+
+    def _handle_quiz_request(self, path: str) -> dict:
+        parsed = urlsplit(path)
+        params = parse_qs(parsed.query)
+        action = params.get("action", ["state"])[0]
+        now = time.monotonic()
+
+        if action == "state":
+            return self._quiz_state()
+
+        if action == "start":
+            with self.app_lock:
+                self.app_controller.start_quiz(now)
+            self.camera.set_marker_enabled(self.marker_detection_required())
+            self._save_runtime_settings()
+            return self._quiz_state()
+
+        if action == "stop":
+            with self.app_lock:
+                self.app_controller.stop_quiz(now)
+            self.camera.set_marker_enabled(self.marker_detection_required())
+            self._save_runtime_settings()
+            return self._quiz_state()
+
+        if action == "reset":
+            with self.app_lock:
+                self.app_controller.reset_quiz(now)
+            return self._quiz_state()
+
+        return {"error": f"unknown quiz action: {action}", **self._quiz_state()}
+
     def _run_halt_after_response(self) -> None:
         time.sleep(0.35)
         try:
@@ -485,6 +677,9 @@ class SharedCameraMjpegServer:
         with self.sound_lock:
             sound_volume_percent = self.sound_volume_percent
             speech_motion_amplitude_percent = self.speech_motion_amplitude_percent
+        with self.app_lock:
+            app_mode = self.app_controller.mode
+            auto_start_quiz = self.app_controller.auto_start_quiz
         return {
             "gaze_mode": gaze_mode,
             "target_mode": target_mode,
@@ -493,6 +688,12 @@ class SharedCameraMjpegServer:
             "eyelid_offset": eyelid_offset,
             "sound_volume_percent": sound_volume_percent,
             "speech_motion_amplitude_percent": speech_motion_amplitude_percent,
+            "app_mode": app_mode,
+            "auto_start_quiz": auto_start_quiz,
+            "quiz_file": self.quiz_file,
+            "quiz_runtime_file": self.quiz_runtime_file,
+            "quiz_teams_file": self.quiz_teams_file,
+            "quiz_speech_file": self.quiz_speech_file,
         }
 
     def _settings_state(self) -> dict:
@@ -530,6 +731,24 @@ class SharedCameraMjpegServer:
 
         return {"error": f"unknown expression action: {action}", **self._expression_state()}
 
+    def _sound_clip_metadata(self, path: Path) -> dict:
+        try:
+            stat = path.stat()
+        except OSError:
+            return {"duration_s": None}
+        cache_key = str(path)
+        cached = self.sound_metadata_cache.get(cache_key)
+        if cached is not None:
+            cached_mtime_ns, cached_size, cached_duration_s = cached
+            if cached_mtime_ns == stat.st_mtime_ns and cached_size == stat.st_size:
+                return {"duration_s": cached_duration_s}
+
+        duration_s = sound_clip_duration_s(path)
+        if duration_s is not None:
+            duration_s = round(duration_s, 3)
+        self.sound_metadata_cache[cache_key] = (stat.st_mtime_ns, stat.st_size, duration_s)
+        return {"duration_s": duration_s}
+
     def _sound_clips(self) -> list[dict]:
         try:
             entries = list(self.sound_dir.iterdir())
@@ -544,6 +763,7 @@ class SharedCameraMjpegServer:
                     "id": path.name,
                     "label": path.stem.replace("_", " ").replace("-", " "),
                     "file": path.name,
+                    **self._sound_clip_metadata(path),
                 }
             )
         return sorted(clips, key=lambda item: item["label"].lower())
@@ -568,6 +788,15 @@ class SharedCameraMjpegServer:
             "volume_percent": self.sound_volume_percent,
             "speech_motion_amplitude_percent": self.speech_motion_amplitude_percent,
         }
+        now = time.time()
+        started_at = state.get("started_at")
+        duration_s = state.get("duration_s")
+        if isinstance(started_at, (int, float)):
+            state["elapsed_s"] = round(max(0.0, now - started_at), 3)
+            if isinstance(duration_s, (int, float)):
+                expected_end_at = started_at + duration_s
+                state["expected_end_at"] = expected_end_at
+                state["remaining_s"] = round(max(0.0, expected_end_at - now), 3)
         if self.sound_process is not None and not running:
             state["returncode"] = self.sound_process.returncode
             if state.get("status") == "playing":
@@ -585,6 +814,14 @@ class SharedCameraMjpegServer:
     def is_sound_running(self) -> bool:
         with self.sound_lock:
             return self.sound_process is not None and self.sound_process.poll() is None
+
+    def play_sound_clip(self, clip: str | None) -> dict:
+        if not clip:
+            return {**self._sound_state(), "ok": True, "status": "no_clip"}
+        try:
+            return self._play_sound_clip(clip)
+        except ValueError as exc:
+            return {**self._sound_state(), "ok": False, "error": str(exc)}
 
     def speech_motion_amplitude_snapshot(self) -> int:
         with self.sound_lock:
@@ -743,6 +980,7 @@ class SharedCameraMjpegServer:
 
     def _play_sound_clip(self, clip: str) -> dict:
         path = self._sound_clip_path(clip)
+        metadata = self._sound_clip_metadata(path)
 
         commands = self._sound_player_commands(path)
         if not commands:
@@ -775,6 +1013,7 @@ class SharedCameraMjpegServer:
                     "player": player,
                     "pid": process.pid,
                     "started_at": time.time(),
+                    **metadata,
                 }
                 return self._sound_state_locked()
 
@@ -817,7 +1056,7 @@ class SharedCameraMjpegServer:
                 raise ValueError(f"target mode must be one of: {', '.join(sorted(TARGET_MODES))}")
             with self.target_lock:
                 self.target_mode = mode
-            self.camera.set_marker_enabled(mode == TARGET_MODE_MARKERS)
+            self.camera.set_marker_enabled(self.marker_detection_required(mode))
             self._save_runtime_settings()
             return self._target_state()
 
@@ -1058,6 +1297,30 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     <div class="row"><div class="k">target source</div><div class="v" id="targetSource">-</div></div>
     <div class="row"><div class="k">sent</div><div class="v" id="sent">-</div></div>
     <div class="panel">
+      <h1>App</h1>
+      <div class="controls">
+        <button type="button" data-app-mode="active">Active</button>
+        <button type="button" data-app-mode="idle" class="secondary">Idle</button>
+        <button type="button" id="startQuiz" class="secondary">Start quiz</button>
+        <button type="button" id="stopQuiz" class="secondary">Stop quiz</button>
+      </div>
+      <label><input id="autoStartQuiz" type="checkbox"> Start quiz from marker</label>
+      <div class="row"><div class="k">mode</div><div class="v" id="appMode">-</div></div>
+      <div class="row"><div class="k">phase</div><div class="v" id="appPhase">-</div></div>
+      <div class="row"><div class="k">markers</div><div class="v" id="worldMarkers">-</div></div>
+    </div>
+    <div class="panel">
+      <h1>Quiz</h1>
+      <div class="controls"><button type="button" id="resetQuiz" class="secondary">Reset quiz</button></div>
+      <div class="row"><div class="k">quiz</div><div class="v" id="quizName">-</div></div>
+      <div class="row"><div class="k">registered</div><div class="v" id="quizRegistered">-</div></div>
+      <div class="row"><div class="k">question</div><div class="v" id="quizQuestion">-</div></div>
+      <div class="row"><div class="k">accepting</div><div class="v" id="quizAccepting">-</div></div>
+      <div class="row"><div class="k">answers</div><div class="v" id="quizAnswers">-</div></div>
+      <div class="row"><div class="k">missing</div><div class="v" id="quizMissing">-</div></div>
+      <div class="row"><div class="k">scores</div><div class="v" id="quizScores">-</div></div>
+    </div>
+    <div class="panel">
       <h1>Target</h1>
       <label><input id="markerTarget" type="checkbox"> Look at markers</label>
       <div class="row"><div class="k">mode</div><div class="v" id="targetMode">-</div></div>
@@ -1113,6 +1376,7 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
 </main>
 <script>
 function fmt(n,d=1){return Number.isFinite(n)?n.toFixed(d):"-";}
+function fmtDuration(n){return Number.isFinite(n)?`${n.toFixed(1)}s`:"-";}
 function renderPiTemp(value){
   const status=document.getElementById("piStatus");
   const temp=document.getElementById("piTemp");
@@ -1128,6 +1392,10 @@ function renderPiTemp(value){
 const manualMode=document.getElementById("manualMode");
 const markerTarget=document.getElementById("markerTarget");
 const animationGaze=document.getElementById("animationGaze");
+const autoStartQuiz=document.getElementById("autoStartQuiz");
+const startQuiz=document.getElementById("startQuiz");
+const stopQuiz=document.getElementById("stopQuiz");
+const resetQuiz=document.getElementById("resetQuiz");
 const resetPose=document.getElementById("resetPose");
 const haltSystem=document.getElementById("haltSystem");
 const eyelidOffset=document.getElementById("eyelidOffset");
@@ -1185,6 +1453,56 @@ async function gaze(action, extra={}){
   const d=await r.json();
   renderGaze(d);
   return d;
+}
+async function app(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/app?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderApp(d);
+  return d;
+}
+async function quizControl(action, extra={}){
+  const p=new URLSearchParams({action, ...extra});
+  const r=await fetch(`/quiz?${p}`,{cache:"no-store"});
+  const d=await r.json();
+  renderQuiz(d);
+  return d;
+}
+function renderApp(a){
+  if(!a)return;
+  document.getElementById("appMode").textContent=a.mode || "-";
+  document.getElementById("appPhase").textContent=a.phase || "-";
+  autoStartQuiz.checked=!!a.auto_start_quiz;
+  for(const button of document.querySelectorAll("button[data-app-mode]")){
+    button.classList.toggle("secondary", button.dataset.appMode !== a.mode);
+  }
+}
+function renderWorld(w){
+  if(!w)return;
+  const visible=(w.visible_marker_ids || []).join(",") || "-";
+  const stable=(w.stable_marker_ids || []).join(",") || "-";
+  document.getElementById("worldMarkers").textContent=`seen ${visible}; stable ${stable}`;
+}
+function renderQuiz(q){
+  if(!q)return;
+  document.getElementById("quizName").textContent=q.name || "-";
+  const registered=q.registered_player_names || q.registered_player_ids || [];
+  document.getElementById("quizRegistered").textContent=registered.length
+    ? `${registered.join(", ")} (${q.registered_count || registered.length}/${q.player_count || "?"})`
+    : (q.registration_open ? "waiting" : "-");
+  const questionIndex=Number.isFinite(q.question_index) ? q.question_index + 1 : null;
+  document.getElementById("quizQuestion").textContent=questionIndex ? `${questionIndex}/${q.question_count || "-"} ${q.phase || ""}` : (q.phase || "-");
+  document.getElementById("quizAccepting").textContent=q.accepting_answers ? "yes" : "no";
+  const answers=q.locked_answers || {};
+  const missing=q.missing_players || [];
+  const total=Object.keys(answers).length;
+  const locked=total ? Math.max(0,total-missing.length) : 0;
+  document.getElementById("quizAnswers").textContent=total ? `${locked}/${total}` : "-";
+  document.getElementById("quizMissing").textContent=missing.length ? missing.join(", ") : (q.nudge_text || "-");
+  const scores=q.scores || {};
+  document.getElementById("quizScores").textContent=Object.keys(scores).length
+    ? Object.entries(scores).map(([player,score])=>`${player} ${score}`).join(", ")
+    : "-";
 }
 function renderGaze(g){
   if(!g)return;
@@ -1295,12 +1613,17 @@ function renderSound(s){
   }
   const el=document.getElementById("soundState");
   const volumeText=Number.isFinite(s.volume_percent) ? `, vol ${Math.round(s.volume_percent)}%` : "";
+  const timeText=Number.isFinite(s.remaining_s)
+    ? `, ${fmtDuration(s.remaining_s)} left`
+    : Number.isFinite(s.duration_s)
+      ? `, ${fmtDuration(s.duration_s)}`
+      : "";
   if(s.ok === false){
     el.textContent=`error: ${s.error || s.status || "failed"}`;
   }else if(s.running){
-    el.textContent=`playing ${s.clip || "-"} via ${s.player || "-"}${volumeText}`;
+    el.textContent=`playing ${s.clip || "-"} via ${s.player || "-"}${volumeText}${timeText}`;
   }else{
-    el.textContent=`${s.status || "idle"}${volumeText}`;
+    el.textContent=`${s.status || "idle"}${volumeText}${timeText}`;
   }
 }
 function renderSoundClips(clips){
@@ -1319,7 +1642,8 @@ function renderSoundClips(clips){
     const button=document.createElement("button");
     button.type="button";
     button.dataset.clip=clip.id;
-    button.title=clip.file || clip.id;
+    const durationText=Number.isFinite(clip.duration_s) ? ` (${fmtDuration(clip.duration_s)})` : "";
+    button.title=`${clip.file || clip.id}${durationText}`;
     button.textContent=clip.label || clip.id;
     soundList.appendChild(button);
   }
@@ -1370,6 +1694,9 @@ async function tick(){
     renderExpression(d.expression);
     renderBlink(d.blink);
     renderSound(d.sound);
+    renderApp(d.app);
+    renderQuiz(d.quiz);
+    renderWorld(d.world);
     renderCalibration(d.calibration);
     document.getElementById("raw").textContent=JSON.stringify(d,null,2);
   }catch(e){
@@ -1378,6 +1705,21 @@ async function tick(){
 }
 markerTarget.addEventListener("change",()=>target("set",{mode:markerTarget.checked ? "markers" : "faces"}));
 animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.checked ? "animation_engine" : "direct_pose"}));
+document.querySelectorAll("button[data-app-mode]").forEach((button)=>{
+  button.addEventListener("click",()=>app("set_mode",{mode:button.dataset.appMode}).catch(()=>{
+    document.getElementById("appPhase").textContent="mode failed";
+  }));
+});
+autoStartQuiz.addEventListener("change",()=>app("set_auto_start",{enabled:autoStartQuiz.checked ? "1" : "0"}));
+startQuiz.addEventListener("click",()=>quizControl("start").catch(()=>{
+  document.getElementById("quizQuestion").textContent="start failed";
+}));
+stopQuiz.addEventListener("click",()=>quizControl("stop").catch(()=>{
+  document.getElementById("quizQuestion").textContent="stop failed";
+}));
+resetQuiz.addEventListener("click",()=>quizControl("reset").catch(()=>{
+  document.getElementById("quizQuestion").textContent="reset failed";
+}));
 resetPose.addEventListener("click",()=>pose("reset").catch(()=>{
   document.getElementById("poseState").textContent="reset failed";
 }));
@@ -1486,6 +1828,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_SPEECH_MOTION_AMPLITUDE_PERCENT,
     )
+    parser.add_argument("--app-mode", choices=sorted(APP_MODES), default=APP_MODE_ACTIVE)
+    parser.add_argument("--auto-start-quiz", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--quiz-file", default=DEFAULT_QUIZ_FILE)
+    parser.add_argument("--quiz-runtime-file", default=DEFAULT_QUIZ_RUNTIME_FILE)
+    parser.add_argument("--quiz-teams-file", default=DEFAULT_QUIZ_TEAMS_FILE)
+    parser.add_argument("--quiz-speech-file", default=DEFAULT_QUIZ_SPEECH_FILE)
     parser.add_argument("--loop-sleep", type=float, default=0.003)
     parser.add_argument("--mjpeg-port", type=int, default=8080)
     parser.add_argument("--debug-jpeg-quality", type=int, default=80)
@@ -1547,6 +1895,34 @@ def apply_runtime_settings(args: argparse.Namespace) -> None:
         args.speech_motion_amplitude = normalize_speech_motion_amplitude_percent(
             speech_motion_amplitude_percent
         )
+
+    app_mode = settings.get("app_mode")
+    if app_mode is not None:
+        if app_mode not in APP_MODES:
+            raise ValueError(f"settings app_mode must be one of: {', '.join(sorted(APP_MODES))}")
+        args.app_mode = app_mode
+
+    auto_start_quiz = settings.get("auto_start_quiz")
+    if auto_start_quiz is not None:
+        if not isinstance(auto_start_quiz, bool):
+            raise ValueError("settings auto_start_quiz must be a boolean")
+        args.auto_start_quiz = auto_start_quiz
+
+    quiz_file = settings.get("quiz_file")
+    if quiz_file is not None:
+        args.quiz_file = str(quiz_file)
+
+    quiz_runtime_file = settings.get("quiz_runtime_file")
+    if quiz_runtime_file is not None:
+        args.quiz_runtime_file = str(quiz_runtime_file)
+
+    quiz_teams_file = settings.get("quiz_teams_file")
+    if quiz_teams_file is not None:
+        args.quiz_teams_file = str(quiz_teams_file)
+
+    quiz_speech_file = settings.get("quiz_speech_file")
+    if quiz_speech_file is not None:
+        args.quiz_speech_file = str(quiz_speech_file)
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -1834,6 +2210,17 @@ def cancel_pending_speech_motion(engine: RobotEngine) -> bool:
     return True
 
 
+class FaceFollowRobotDialogAdapter:
+    def __init__(self, server: SharedCameraMjpegServer) -> None:
+        self.server = server
+
+    def speak_to_group(self, clip: str | None) -> dict:
+        return self.server.play_sound_clip(clip)
+
+    def is_speaking(self) -> bool:
+        return self.server.is_sound_running()
+
+
 def apply_blink_settings(
     engine: RobotEngine,
     *,
@@ -1981,6 +2368,23 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--mjpeg-port must be >= 0")
     if args.target_mode not in TARGET_MODES:
         raise ValueError(f"--target-mode must be one of: {', '.join(sorted(TARGET_MODES))}")
+    if args.app_mode not in APP_MODES:
+        raise ValueError(f"--app-mode must be one of: {', '.join(sorted(APP_MODES))}")
+
+    quiz_config = load_quiz_config(
+        args.quiz_file,
+        runtime_path=args.quiz_runtime_file,
+        teams_path=args.quiz_teams_file,
+        speech_path=args.quiz_speech_file,
+    )
+    app_controller = AppController(
+        quiz_config,
+        mode=args.app_mode,
+        auto_start_quiz=args.auto_start_quiz,
+    )
+    if args.app_mode == APP_MODE_QUIZ:
+        app_controller.start_quiz(time.monotonic())
+    world_builder = WorldStateBuilder(ObservationDecoder(quiz_config))
 
     engine = RobotEngine(
         default_engine_config(
@@ -2005,12 +2409,18 @@ def run(args: argparse.Namespace) -> int:
         max_match_distance=args.track_max_distance,
         smoothing=args.track_smoothing,
         debug_jpeg_quality=args.debug_jpeg_quality if args.mjpeg_port else None,
+        marker_enabled=app_controller.marker_detection_required(args.target_mode),
     )
     mjpeg_server = SharedCameraMjpegServer(
         camera,
         port=args.mjpeg_port,
         calibration_file=args.calibration_file,
         settings_file=args.settings_file,
+        app_controller=app_controller,
+        quiz_file=args.quiz_file,
+        quiz_runtime_file=args.quiz_runtime_file,
+        quiz_teams_file=args.quiz_teams_file,
+        quiz_speech_file=args.quiz_speech_file,
         idle_blink=args.idle_blink,
         blink_interval_s=args.blink_interval,
         gaze_mode=args.gaze_mode,
@@ -2019,6 +2429,7 @@ def run(args: argparse.Namespace) -> int:
         sound_volume_percent=args.sound_volume,
         speech_motion_amplitude_percent=args.speech_motion_amplitude,
     )
+    robot_dialog = FaceFollowRobotDialogAdapter(mjpeg_server)
 
     active_face_id: int | None = None
     active_marker_id: int | None = None
@@ -2093,78 +2504,92 @@ def run(args: argparse.Namespace) -> int:
                 frame = camera.get_latest()
                 if frame is None:
                     continue
+                frame_dict = frame.as_dict()
+                world = world_builder.update_from_marker_dicts(frame_dict["markers"], now)
+                mjpeg_server.set_world(world)
+                mjpeg_server.update_app(world, robot_dialog, now)
+                camera.set_marker_enabled(mjpeg_server.marker_detection_required(target_mode))
+                sound_running = mjpeg_server.is_sound_running()
+
                 target_track: FaceTrack | MarkerTrack | None
-                selected_kind: str | None
-                if target_mode == TARGET_MODE_MARKERS:
-                    target_track = choose_marker(frame, active_marker_id)
-                    selected_kind = TARGET_MODE_MARKERS if target_track is not None else None
-                else:
-                    target_track = choose_face(frame, active_face_id)
-                    selected_kind = TARGET_MODE_FACES if target_track is not None else None
+                target_track = None
+                selected_kind: str | None = None
                 target = None
-                target_source = "none"
+                target_source = mjpeg_server.app_mode_snapshot()
                 sent = False
-                if target_track is None:
-                    if target_mode == TARGET_MODE_MARKERS:
-                        active_marker_id = None
-                    else:
-                        active_face_id = None
-                elif mjpeg_server.is_calibration_enabled():
-                    if target_mode == TARGET_MODE_MARKERS:
-                        active_marker_id = target_track.track_id
-                    else:
-                        active_face_id = target_track.track_id
-                    target_source = "manual_calibration"
+
+                if not mjpeg_server.app_should_run_active_follow():
+                    active_face_id = None
+                    active_marker_id = None
                 else:
                     if target_mode == TARGET_MODE_MARKERS:
-                        active_marker_id = target_track.track_id
-                        image_point = target_track.center
+                        target_track = choose_marker(frame, active_marker_id)
+                        selected_kind = TARGET_MODE_MARKERS if target_track is not None else None
                     else:
-                        active_face_id = target_track.track_id
-                        image_point = target_track.eye_center
-                    fallback = frame_point_to_gaze(
-                        image_point,
-                        frame,
-                        horizontal_fov=args.horizontal_fov,
-                        vertical_fov=args.vertical_fov,
-                        yaw_scale=args.yaw_scale,
-                        pitch_scale=args.pitch_scale,
-                        max_yaw=args.max_yaw,
-                        max_pitch=args.max_pitch,
-                    )
-                    target, target_source = calibrated_frame_point_to_gaze(
-                        image_point,
-                        frame,
-                        mjpeg_server.calibration_points_snapshot(),
-                        fallback=fallback,
-                        max_yaw=args.max_yaw,
-                        max_pitch=args.max_pitch,
-                    )
-                    target_source = f"{target_mode}_{target_source}"
-                    if should_send(
-                        now,
-                        target,
-                        last_target,
-                        last_sent_at,
-                        send_interval=send_interval,
-                        min_angle_delta=args.min_angle_delta,
-                    ) and drive_gaze_if_ready(
-                        engine,
-                        target,
-                        dwell_ms=args.gaze_ms,
-                        gaze_mode=gaze_mode,
-                        animation_layers_active=sound_running,
-                    ):
-                        last_sent_at = now
-                        last_target = target
-                        sent = True
-                        if args.verbose:
-                            yaw, pitch = target
-                            print(
-                                f"{target_mode}_track={target_track.track_id} yaw={yaw:.1f} pitch={pitch:.1f} "
-                                f"seq={frame.seq}",
-                                flush=True,
-                            )
+                        target_track = choose_face(frame, active_face_id)
+                        selected_kind = TARGET_MODE_FACES if target_track is not None else None
+
+                    if target_track is None:
+                        if target_mode == TARGET_MODE_MARKERS:
+                            active_marker_id = None
+                        else:
+                            active_face_id = None
+                    elif mjpeg_server.is_calibration_enabled():
+                        if target_mode == TARGET_MODE_MARKERS:
+                            active_marker_id = target_track.track_id
+                        else:
+                            active_face_id = target_track.track_id
+                        target_source = "manual_calibration"
+                    else:
+                        if target_mode == TARGET_MODE_MARKERS:
+                            active_marker_id = target_track.track_id
+                            image_point = target_track.center
+                        else:
+                            active_face_id = target_track.track_id
+                            image_point = target_track.eye_center
+                        fallback = frame_point_to_gaze(
+                            image_point,
+                            frame,
+                            horizontal_fov=args.horizontal_fov,
+                            vertical_fov=args.vertical_fov,
+                            yaw_scale=args.yaw_scale,
+                            pitch_scale=args.pitch_scale,
+                            max_yaw=args.max_yaw,
+                            max_pitch=args.max_pitch,
+                        )
+                        target, target_source = calibrated_frame_point_to_gaze(
+                            image_point,
+                            frame,
+                            mjpeg_server.calibration_points_snapshot(),
+                            fallback=fallback,
+                            max_yaw=args.max_yaw,
+                            max_pitch=args.max_pitch,
+                        )
+                        target_source = f"{target_mode}_{target_source}"
+                        if should_send(
+                            now,
+                            target,
+                            last_target,
+                            last_sent_at,
+                            send_interval=send_interval,
+                            min_angle_delta=args.min_angle_delta,
+                        ) and drive_gaze_if_ready(
+                            engine,
+                            target,
+                            dwell_ms=args.gaze_ms,
+                            gaze_mode=gaze_mode,
+                            animation_layers_active=sound_running,
+                        ):
+                            last_sent_at = now
+                            last_target = target
+                            sent = True
+                            if args.verbose:
+                                yaw, pitch = target
+                                print(
+                                    f"{target_mode}_track={target_track.track_id} yaw={yaw:.1f} pitch={pitch:.1f} "
+                                    f"seq={frame.seq}",
+                                    flush=True,
+                                )
                 active_id = active_marker_id if target_mode == TARGET_MODE_MARKERS else active_face_id
                 selected_id = target_track.track_id if target_track is not None else None
                 mjpeg_server.set_debug(

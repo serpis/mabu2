@@ -1,0 +1,14 @@
+name: Robotquiz
+questions:
+  - text: Dagens fråga
+    prompt_clip: dagens_fraga.wav
+    choices:
+      A: Svar A
+      B: Svar B
+    correct: B
+  - text: Fråga häst
+    prompt_clip: fraga_hast.wav
+    choices:
+      A: Svar A
+      B: Svar B
+    correct: A

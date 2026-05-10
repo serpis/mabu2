@@ -157,3 +157,14 @@ Efter kodändringar från utvecklingsmaskinen:
 ```bash
 ./deploy/update_face_follow_pi.sh
 ```
+
+Quizljud genereras på utvecklingsmaskinen innan deploy:
+
+```bash
+python3 quiz_bake.py
+./deploy/update_face_follow_pi.sh
+```
+
+`quiz_bake.py` använder `/Users/serp/code/20260508-tts/.venv` och skriver
+bakade `.wav`-filer till `sound/` samt speech-mapen
+`quiz/robot_quiz_baked_speech.json`.
