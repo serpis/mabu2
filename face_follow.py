@@ -43,6 +43,9 @@ GAZE_MODES = {GAZE_MODE_ANIMATION, GAZE_MODE_DIRECT}
 TARGET_MODE_FACES = "faces"
 TARGET_MODE_MARKERS = "markers"
 TARGET_MODES = {TARGET_MODE_FACES, TARGET_MODE_MARKERS}
+TARGET_BEHAVIOR_STICKY = "sticky"
+TARGET_BEHAVIOR_SCAN = "scan"
+TARGET_BEHAVIORS = {TARGET_BEHAVIOR_STICKY, TARGET_BEHAVIOR_SCAN}
 REACHABLE_YAW_MIN = CHANNELS["neck_rotation"].min_angle + CHANNELS["eye_leftright"].min_angle
 REACHABLE_YAW_MAX = CHANNELS["neck_rotation"].max_angle + CHANNELS["eye_leftright"].max_angle
 REACHABLE_PITCH_MIN = CHANNELS["neck_elevation"].min_angle + CHANNELS["eye_updown"].min_angle
@@ -145,6 +148,7 @@ class SharedCameraMjpegServer:
         blink_interval_s: float,
         gaze_mode: str,
         target_mode: str,
+        target_behavior: str,
         eyelid_offset: float,
         sound_volume_percent: int,
         speech_motion_amplitude_percent: int,
@@ -192,6 +196,8 @@ class SharedCameraMjpegServer:
         self.gaze_mode = gaze_mode
         self.target_lock = threading.Lock()
         self.target_mode = target_mode
+        self.target_behavior = target_behavior
+        self.target_revision = 0
         self.camera.set_marker_enabled(self.marker_detection_required(target_mode))
         self.expression_lock = threading.Lock()
         self.eyelid_offset = eyelid_offset
@@ -525,6 +531,14 @@ class SharedCameraMjpegServer:
         with self.target_lock:
             return self.target_mode
 
+    def target_behavior_snapshot(self) -> str:
+        with self.target_lock:
+            return self.target_behavior
+
+    def target_revision_snapshot(self) -> int:
+        with self.target_lock:
+            return self.target_revision
+
     def expression_state_snapshot(self) -> float:
         with self.expression_lock:
             return self.eyelid_offset
@@ -669,6 +683,7 @@ class SharedCameraMjpegServer:
             gaze_mode = self.gaze_mode
         with self.target_lock:
             target_mode = self.target_mode
+            target_behavior = self.target_behavior
         with self.blink_lock:
             idle_blink_enabled = self.idle_blink_enabled
             blink_interval_s = self.blink_interval_s
@@ -683,6 +698,7 @@ class SharedCameraMjpegServer:
         return {
             "gaze_mode": gaze_mode,
             "target_mode": target_mode,
+            "target_behavior": target_behavior,
             "idle_blink_enabled": idle_blink_enabled,
             "blink_interval_s": blink_interval_s,
             "eyelid_offset": eyelid_offset,
@@ -1032,7 +1048,11 @@ class SharedCameraMjpegServer:
 
     def _target_state(self) -> dict:
         with self.target_lock:
-            return {"mode": self.target_mode}
+            return {
+                "mode": self.target_mode,
+                "behavior": self.target_behavior,
+                "revision": self.target_revision,
+            }
 
     def _handle_target_request(self, path: str) -> dict:
         parsed = urlsplit(path)
@@ -1042,7 +1062,7 @@ class SharedCameraMjpegServer:
         if action == "state":
             return self._target_state()
 
-        if action == "set":
+        if action in {"set", "look"}:
             mode = params.get("mode", [None])[0]
             if mode is None:
                 use_markers = params.get("markers", [None])[0]
@@ -1054,11 +1074,27 @@ class SharedCameraMjpegServer:
                     )
             if mode not in TARGET_MODES:
                 raise ValueError(f"target mode must be one of: {', '.join(sorted(TARGET_MODES))}")
+            behavior = params.get("behavior", [None])[0]
+            if behavior is None:
+                behavior = TARGET_BEHAVIOR_SCAN if action == "look" else self.target_behavior
+            if behavior not in TARGET_BEHAVIORS:
+                raise ValueError(
+                    f"target behavior must be one of: {', '.join(sorted(TARGET_BEHAVIORS))}"
+                )
+            if action == "look":
+                with self.app_lock:
+                    self.app_controller.set_mode(APP_MODE_ACTIVE, time.monotonic())
             with self.target_lock:
+                if action == "look" or self.target_mode != mode or self.target_behavior != behavior:
+                    self.target_revision += 1
                 self.target_mode = mode
+                self.target_behavior = behavior
             self.camera.set_marker_enabled(self.marker_detection_required(mode))
             self._save_runtime_settings()
-            return self._target_state()
+            state = self._target_state()
+            if action == "look":
+                state["app"] = self._app_state()
+            return state
 
         return {"error": f"unknown target action: {action}", **self._target_state()}
 
@@ -1322,8 +1358,13 @@ pre{margin:12px 14px 18px;padding:10px;background:#0b0b0b;border:1px solid #333;
     </div>
     <div class="panel">
       <h1>Target</h1>
+      <div class="controls">
+        <button type="button" id="lookFaces">Faces</button>
+        <button type="button" id="lookMarkers" class="secondary">Markers</button>
+      </div>
       <label><input id="markerTarget" type="checkbox"> Look at markers</label>
       <div class="row"><div class="k">mode</div><div class="v" id="targetMode">-</div></div>
+      <div class="row"><div class="k">behavior</div><div class="v" id="targetBehavior">-</div></div>
     </div>
     <div class="panel">
       <h1>Gaze Output</h1>
@@ -1391,6 +1432,8 @@ function renderPiTemp(value){
 }
 const manualMode=document.getElementById("manualMode");
 const markerTarget=document.getElementById("markerTarget");
+const lookFaces=document.getElementById("lookFaces");
+const lookMarkers=document.getElementById("lookMarkers");
 const animationGaze=document.getElementById("animationGaze");
 const autoStartQuiz=document.getElementById("autoStartQuiz");
 const startQuiz=document.getElementById("startQuiz");
@@ -1558,6 +1601,14 @@ function renderTarget(t){
   if(!t)return;
   markerTarget.checked=t.mode === "markers";
   document.getElementById("targetMode").textContent=t.mode || "-";
+  document.getElementById("targetBehavior").textContent=t.behavior || "-";
+  lookFaces.classList.toggle("secondary", t.mode !== "faces");
+  lookMarkers.classList.toggle("secondary", t.mode !== "markers");
+}
+async function lookAt(mode){
+  const d=await target("look",{mode,behavior:"scan"});
+  if(d.app)renderApp(d.app);
+  return d;
 }
 async function expression(action, extra={}){
   const p=new URLSearchParams({action, ...extra});
@@ -1703,6 +1754,12 @@ async function tick(){
     document.getElementById("state").textContent="debug fetch failed";
   }
 }
+lookFaces.addEventListener("click",()=>lookAt("faces").catch(()=>{
+  document.getElementById("targetMode").textContent="faces failed";
+}));
+lookMarkers.addEventListener("click",()=>lookAt("markers").catch(()=>{
+  document.getElementById("targetMode").textContent="markers failed";
+}));
 markerTarget.addEventListener("change",()=>target("set",{mode:markerTarget.checked ? "markers" : "faces"}));
 animationGaze.addEventListener("change",()=>gaze("set",{mode:animationGaze.checked ? "animation_engine" : "direct_pose"}));
 document.querySelectorAll("button[data-app-mode]").forEach((button)=>{
@@ -1814,6 +1871,12 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(TARGET_MODES),
         default=TARGET_MODE_FACES,
     )
+    parser.add_argument(
+        "--target-behavior",
+        choices=sorted(TARGET_BEHAVIORS),
+        default=TARGET_BEHAVIOR_STICKY,
+    )
+    parser.add_argument("--target-scan-interval", type=float, default=2.0)
     parser.add_argument("--gaze-ms", type=float, default=350.0)
     parser.add_argument("--gaze-sample-ms", type=float, default=50.0)
     parser.add_argument("--gaze-blink-threshold", type=float, default=999.0)
@@ -1871,6 +1934,11 @@ def apply_runtime_settings(args: argparse.Namespace) -> None:
     if target_mode is not None:
         if target_mode in TARGET_MODES:
             args.target_mode = target_mode
+
+    target_behavior = settings.get("target_behavior")
+    if target_behavior is not None:
+        if target_behavior in TARGET_BEHAVIORS:
+            args.target_behavior = target_behavior
 
     idle_blink_enabled = settings.get("idle_blink_enabled")
     if idle_blink_enabled is not None:
@@ -2002,6 +2070,55 @@ def choose_marker(frame: TrackedFaceFrame, active_id: int | None) -> MarkerTrack
         return area * 3.0 - distance * 0.8
 
     return max(visible, key=score)
+
+
+def choose_scanning_face(
+    frame: TrackedFaceFrame,
+    active_id: int | None,
+    *,
+    now: float,
+    last_switch_at: float,
+    interval_s: float,
+) -> tuple[FaceTrack | None, float]:
+    visible = frame.visible_tracks
+    if not visible:
+        return None, last_switch_at
+    current = next((face for face in visible if face.track_id == active_id), None)
+    if current is not None and (len(visible) == 1 or now - last_switch_at < interval_s):
+        return current, last_switch_at
+    if current is None:
+        return choose_face(frame, None), now
+    ordered = sorted(visible, key=lambda face: (face.center[0], face.track_id))
+    index = next((idx for idx, face in enumerate(ordered) if face.track_id == current.track_id), -1)
+    if index < 0:
+        return choose_face(frame, None), now
+    return ordered[(index + 1) % len(ordered)], now
+
+
+def choose_scanning_marker(
+    frame: TrackedFaceFrame,
+    active_id: int | None,
+    *,
+    now: float,
+    last_switch_at: float,
+    interval_s: float,
+) -> tuple[MarkerTrack | None, float]:
+    visible = frame.visible_marker_tracks
+    if not visible:
+        return None, last_switch_at
+    current = next((marker for marker in visible if marker.track_id == active_id), None)
+    if current is not None and (len(visible) == 1 or now - last_switch_at < interval_s):
+        return current, last_switch_at
+    if current is None:
+        return choose_marker(frame, None), now
+    ordered = sorted(visible, key=lambda marker: (marker.center[0], marker.track_id))
+    index = next(
+        (idx for idx, marker in enumerate(ordered) if marker.track_id == current.track_id),
+        -1,
+    )
+    if index < 0:
+        return choose_marker(frame, None), now
+    return ordered[(index + 1) % len(ordered)], now
 
 
 def frame_point_to_gaze(
@@ -2285,6 +2402,7 @@ def debug_snapshot(
     target: tuple[float, float] | None,
     target_source: str,
     target_mode: str,
+    target_behavior: str,
     gaze_mode: str,
     sent: bool,
     last_sent_at: float,
@@ -2320,6 +2438,7 @@ def debug_snapshot(
         "target": target_dict,
         "target_source": target_source,
         "target_mode": target_mode,
+        "target_behavior": target_behavior,
         "gaze_mode": gaze_mode,
         "engine_state": engine.state.value,
         "engine_timeline_gazes": len(engine.gaze_events),
@@ -2368,6 +2487,12 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("--mjpeg-port must be >= 0")
     if args.target_mode not in TARGET_MODES:
         raise ValueError(f"--target-mode must be one of: {', '.join(sorted(TARGET_MODES))}")
+    if args.target_behavior not in TARGET_BEHAVIORS:
+        raise ValueError(
+            f"--target-behavior must be one of: {', '.join(sorted(TARGET_BEHAVIORS))}"
+        )
+    if args.target_scan_interval <= 0:
+        raise ValueError("--target-scan-interval must be > 0")
     if args.app_mode not in APP_MODES:
         raise ValueError(f"--app-mode must be one of: {', '.join(sorted(APP_MODES))}")
 
@@ -2425,6 +2550,7 @@ def run(args: argparse.Namespace) -> int:
         blink_interval_s=args.blink_interval,
         gaze_mode=args.gaze_mode,
         target_mode=args.target_mode,
+        target_behavior=args.target_behavior,
         eyelid_offset=args.eyelid_offset,
         sound_volume_percent=args.sound_volume,
         speech_motion_amplitude_percent=args.speech_motion_amplitude,
@@ -2433,6 +2559,9 @@ def run(args: argparse.Namespace) -> int:
 
     active_face_id: int | None = None
     active_marker_id: int | None = None
+    last_target_revision = mjpeg_server.target_revision_snapshot()
+    last_face_switch_at = 0.0
+    last_marker_switch_at = 0.0
     last_sent_at = 0.0
     last_target: tuple[float, float] | None = None
     send_interval = 1.0 / args.send_hz
@@ -2485,6 +2614,16 @@ def run(args: argparse.Namespace) -> int:
             engine.maybe_start_next()
             gaze_mode = mjpeg_server.gaze_mode_snapshot()
             target_mode = mjpeg_server.target_mode_snapshot()
+            target_behavior = mjpeg_server.target_behavior_snapshot()
+            target_revision = mjpeg_server.target_revision_snapshot()
+            if target_revision != last_target_revision:
+                active_face_id = None
+                active_marker_id = None
+                last_target = None
+                last_sent_at = 0.0
+                last_face_switch_at = now
+                last_marker_switch_at = now
+                last_target_revision = target_revision
 
             manual_target = mjpeg_server.pop_pending_manual_gaze()
             if manual_target is not None:
@@ -2523,10 +2662,28 @@ def run(args: argparse.Namespace) -> int:
                     active_marker_id = None
                 else:
                     if target_mode == TARGET_MODE_MARKERS:
-                        target_track = choose_marker(frame, active_marker_id)
+                        if target_behavior == TARGET_BEHAVIOR_SCAN:
+                            target_track, last_marker_switch_at = choose_scanning_marker(
+                                frame,
+                                active_marker_id,
+                                now=now,
+                                last_switch_at=last_marker_switch_at,
+                                interval_s=args.target_scan_interval,
+                            )
+                        else:
+                            target_track = choose_marker(frame, active_marker_id)
                         selected_kind = TARGET_MODE_MARKERS if target_track is not None else None
                     else:
-                        target_track = choose_face(frame, active_face_id)
+                        if target_behavior == TARGET_BEHAVIOR_SCAN:
+                            target_track, last_face_switch_at = choose_scanning_face(
+                                frame,
+                                active_face_id,
+                                now=now,
+                                last_switch_at=last_face_switch_at,
+                                interval_s=args.target_scan_interval,
+                            )
+                        else:
+                            target_track = choose_face(frame, active_face_id)
                         selected_kind = TARGET_MODE_FACES if target_track is not None else None
 
                     if target_track is None:
@@ -2604,6 +2761,7 @@ def run(args: argparse.Namespace) -> int:
                         target=target,
                         target_source=target_source,
                         target_mode=target_mode,
+                        target_behavior=target_behavior,
                         gaze_mode=gaze_mode,
                         sent=sent,
                         last_sent_at=last_sent_at,
