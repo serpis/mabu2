@@ -7,6 +7,7 @@ from dialog_state import (
     APP_MODE_IDLE,
     AppController,
     ObservationDecoder,
+    StableAnswerTracker,
     WorldStateBuilder,
     load_quiz_config,
     quiz_config_from_dict,
@@ -22,6 +23,7 @@ def test_config():
                 "stable_start_s": 0.8,
                 "stable_registration_s": 0.5,
                 "registration_timeout_s": 0.0,
+                "answer_memory_s": 3.0,
                 "stable_answer_s": 1.0,
                 "initial_timeout_s": 2.0,
                 "nudge_timeout_s": 1.0,
@@ -169,6 +171,50 @@ class DialogStateTest(unittest.TestCase):
         self.assertEqual(app.quiz.locked_answers["team_2"], None)
         self.assertEqual(app.quiz.scores, {"team_1": 0, "team_2": 0})
 
+    def test_recent_answer_survives_short_detection_gap(self):
+        tracker = StableAnswerTracker(
+            ("team_1",),
+            stable_for_s=1.0,
+            answer_memory_s=3.0,
+        )
+
+        tracker.update({"team_1": "A"}, 10.0)
+        tracker.update({}, 10.8)
+        self.assertEqual(tracker.current_answers(10.8), {"team_1": "A"})
+
+        tracker.update({}, 11.1)
+        self.assertEqual(tracker.locked_answers(), {"team_1": "A"})
+
+    def test_more_recent_opposite_answer_wins(self):
+        tracker = StableAnswerTracker(
+            ("team_1",),
+            stable_for_s=1.0,
+            answer_memory_s=3.0,
+        )
+
+        tracker.update({"team_1": "A"}, 20.0)
+        tracker.update({"team_1": "B"}, 20.5)
+        self.assertEqual(tracker.current_answers(20.5), {"team_1": "B"})
+
+        tracker.update({}, 21.4)
+        self.assertEqual(tracker.locked_answers(), {"team_1": None})
+
+        tracker.update({}, 21.6)
+        self.assertEqual(tracker.locked_answers(), {"team_1": "B"})
+
+    def test_recent_answer_expires_after_memory_window(self):
+        tracker = StableAnswerTracker(
+            ("team_1",),
+            stable_for_s=10.0,
+            answer_memory_s=3.0,
+        )
+
+        tracker.update({"team_1": "A"}, 30.0)
+        tracker.update({}, 33.1)
+
+        self.assertEqual(tracker.current_answers(33.1), {})
+        self.assertEqual(tracker.locked_answers(), {"team_1": None})
+
     def test_load_separate_quiz_files(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -176,7 +222,7 @@ class DialogStateTest(unittest.TestCase):
                 json.dumps(
                     {
                         "start_marker_id": 7,
-                        "settings": {"stable_answer_s": 1.25},
+                        "settings": {"answer_memory_s": 2.5, "stable_answer_s": 1.25},
                     }
                 )
             )
@@ -223,6 +269,7 @@ class DialogStateTest(unittest.TestCase):
 
         self.assertEqual(config.name, "Split quiz")
         self.assertEqual(config.start_marker_id, 7)
+        self.assertEqual(config.answer_memory_s, 2.5)
         self.assertEqual(config.stable_answer_s, 1.25)
         self.assertEqual(config.players[0].answers, {"A": 0, "B": 1})
         self.assertEqual(config.questions[0].correct, "A")

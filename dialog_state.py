@@ -39,6 +39,7 @@ class QuizConfig:
     stable_start_s: float = 0.8
     stable_registration_s: float = 0.8
     registration_timeout_s: float = 5.0
+    answer_memory_s: float = 3.0
     stable_answer_s: float = 1.0
     initial_timeout_s: float = 5.0
     nudge_timeout_s: float = 4.0
@@ -183,17 +184,30 @@ class WorldStateBuilder:
 
 
 class StableAnswerTracker:
-    def __init__(self, player_ids: tuple[str, ...], *, stable_for_s: float) -> None:
+    def __init__(
+        self,
+        player_ids: tuple[str, ...],
+        *,
+        stable_for_s: float,
+        answer_memory_s: float,
+    ) -> None:
         self.player_ids = player_ids
         self.stable_for_s = stable_for_s
+        self.answer_memory_s = answer_memory_s
+        self.last_seen: dict[str, dict[str, float]] = {}
         self.first_seen: dict[str, tuple[str, float]] = {}
         self.locked: dict[str, str | None] = {}
 
     def update(self, observations: dict[str, str], now: float) -> None:
+        for player_id, answer in observations.items():
+            if player_id not in self.player_ids or player_id in self.locked:
+                continue
+            self.last_seen.setdefault(player_id, {})[answer] = now
+
         for player_id in self.player_ids:
             if player_id in self.locked:
                 continue
-            answer = observations.get(player_id)
+            answer = self.current_answer(player_id, now)
             if answer is None:
                 self.first_seen.pop(player_id, None)
                 continue
@@ -203,6 +217,40 @@ class StableAnswerTracker:
                 continue
             if now - previous[1] >= self.stable_for_s:
                 self.locked[player_id] = answer
+
+    def current_answer(self, player_id: str, now: float) -> str | None:
+        seen = self.last_seen.get(player_id)
+        if not seen:
+            return None
+        cutoff = now - self.answer_memory_s
+        recent = {
+            answer: last_seen_at
+            for answer, last_seen_at in seen.items()
+            if last_seen_at >= cutoff
+        }
+        if recent != seen:
+            if recent:
+                self.last_seen[player_id] = recent
+            else:
+                self.last_seen.pop(player_id, None)
+        if not recent:
+            return None
+        latest_seen_at = max(recent.values())
+        latest_answers = [
+            answer
+            for answer, last_seen_at in recent.items()
+            if last_seen_at == latest_seen_at
+        ]
+        if len(latest_answers) != 1:
+            return None
+        return latest_answers[0]
+
+    def current_answers(self, now: float) -> dict[str, str]:
+        return {
+            player_id: answer
+            for player_id in self.player_ids
+            if (answer := self.current_answer(player_id, now)) is not None
+        }
 
     def missing_players(self) -> list[str]:
         return [player_id for player_id in self.player_ids if player_id not in self.locked]
@@ -400,6 +448,7 @@ class QuizSession:
             self.answer_tracker = StableAnswerTracker(
                 self.registered_player_ids,
                 stable_for_s=self.config.stable_answer_s,
+                answer_memory_s=self.config.answer_memory_s,
             )
             self._speak_question(robot)
             self._set_phase("speaking_question", now)
@@ -763,6 +812,7 @@ def quiz_config_from_dict(data: dict[str, Any]) -> QuizConfig:
         registration_timeout_s=float(
             settings.get("registration_timeout_s", data.get("registration_timeout_s", 5.0))
         ),
+        answer_memory_s=float(settings.get("answer_memory_s", data.get("answer_memory_s", 3.0))),
         stable_answer_s=float(settings.get("stable_answer_s", data.get("stable_answer_s", 1.0))),
         initial_timeout_s=float(settings.get("initial_timeout_s", data.get("initial_timeout_s", 5.0))),
         nudge_timeout_s=float(settings.get("nudge_timeout_s", data.get("nudge_timeout_s", 4.0))),

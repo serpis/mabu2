@@ -107,6 +107,7 @@ Runtime-regler ligger i en egen fil:
     "stable_start_s": 0.8,
     "stable_registration_s": 0.8,
     "registration_timeout_s": 5.0,
+    "answer_memory_s": 3.0,
     "stable_answer_s": 1.0,
     "initial_timeout_s": 5.0,
     "nudge_timeout_s": 4.0
@@ -199,6 +200,12 @@ class StableAnswerTracker:
     def locked_answers(self) -> dict[str, str | None]: ...
     def missing_players(self) -> list[str]: ...
 ```
+
+För svarskort används `answer_memory_s` som ett kort per-lag-minne. Om varken `A`
+eller `B` har synts inom fönstret finns inget aktuellt svar. Om båda har synts
+är den senast sedda sidan lagets aktuella svar. `stable_answer_s` räknas ovanpå
+detta aktuella svar, så ett kort kan klara korta detektionsglapp men ett byte till
+andra sidan tar över direkt.
 
 Regler:
 

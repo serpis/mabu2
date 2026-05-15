@@ -5,6 +5,7 @@
     "stable_start_s": 0.8,
     "stable_registration_s": 0.8,
     "registration_timeout_s": 5.0,
+    "answer_memory_s": 3.0,
     "stable_answer_s": 1.0,
     "initial_timeout_s": 5.0,
     "nudge_timeout_s": 4.0,
