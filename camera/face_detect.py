@@ -427,7 +427,7 @@ class FaceTrackingPipeline:
             max_match_distance=max_match_distance,
             smoothing=smoothing,
         )
-        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
         parameters = cv2.aruco.DetectorParameters()
         self.marker_detector = cv2.aruco.ArucoDetector(dictionary, parameters)
         self.marker_tracker = GreedyMarkerTracker(
