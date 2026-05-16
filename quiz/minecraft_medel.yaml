@@ -1,0 +1,71 @@
+name: Minecraftquiz_medelsvart
+questions:
+  - text: Kan man göra en säng av ull och träplankor?
+    prompt_clip: minecraft_med_01.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan man tämja en varg med ben?
+    prompt_clip: minecraft_med_02.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan man göra glas genom att smälta sand?
+    prompt_clip: minecraft_med_03.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Är obsidian snabbare att hugga än jord?
+    prompt_clip: minecraft_med_04.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B
+
+  - text: Kan man odla vete från frön?
+    prompt_clip: minecraft_med_05.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan man andas hur länge som helst under vatten utan hjälp?
+    prompt_clip: minecraft_med_06.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B
+
+  - text: Kan man använda en hink för att plocka upp lava?
+    prompt_clip: minecraft_med_07.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Släpper skelett ibland pilar när de dör?
+    prompt_clip: minecraft_med_08.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan man göra papper av sockerrör?
+    prompt_clip: minecraft_med_09.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Är Nether samma dimension som The End?
+    prompt_clip: minecraft_med_10.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B

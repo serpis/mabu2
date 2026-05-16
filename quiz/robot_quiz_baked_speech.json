@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-09T20:01:18Z",
+  "generated_at": "2026-05-11T20:01:33Z",
   "items": [
     {
       "clip": "quiz_registration_prompt.wav",
@@ -117,27 +117,107 @@
       "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett, Lag två och Lag tre."
     },
     {
-      "clip": "dagens_fraga.wav",
+      "clip": "minecraft_01.wav",
       "key": "question_01",
-      "text": "Fråga 1. Dagens fråga Svar A: Svar A. Svar B: Svar B."
+      "text": "Fråga 1. Kan man hugga träd i Minecraft? Svar A: Ja. Svar B: Nej."
     },
     {
       "clip": "quiz_question_01_result.wav",
       "key": "question_01__result",
-      "text": "Rätt svar var B: Svar B."
+      "text": "Rätt svar var A: Ja."
     },
     {
-      "clip": "fraga_hast.wav",
+      "clip": "minecraft_02.wav",
       "key": "question_02",
-      "text": "Fråga 2. Fråga häst Svar A: Svar A. Svar B: Svar B."
+      "text": "Fråga 2. Kan creepers explodera? Svar A: Ja. Svar B: Nej."
     },
     {
       "clip": "quiz_question_02_result.wav",
       "key": "question_02__result",
-      "text": "Rätt svar var A: Svar A."
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_03.wav",
+      "key": "question_03",
+      "text": "Fråga 3. Är diamanter gjorda av trä? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_03_result.wav",
+      "key": "question_03__result",
+      "text": "Rätt svar var B: Nej."
+    },
+    {
+      "clip": "minecraft_04.wav",
+      "key": "question_04",
+      "text": "Fråga 4. Kan man bygga hus i Minecraft? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_04_result.wav",
+      "key": "question_04__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_05.wav",
+      "key": "question_05",
+      "text": "Fråga 5. Kan en gris flyga utan hjälp i Minecraft? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_05_result.wav",
+      "key": "question_05__result",
+      "text": "Rätt svar var B: Nej."
+    },
+    {
+      "clip": "minecraft_06.wav",
+      "key": "question_06",
+      "text": "Fråga 6. Kan man hitta lava i Minecraft? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_06_result.wav",
+      "key": "question_06__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_07.wav",
+      "key": "question_07",
+      "text": "Fråga 7. Är vatten farligt att nudda i Minecraft? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_07_result.wav",
+      "key": "question_07__result",
+      "text": "Rätt svar var B: Nej."
+    },
+    {
+      "clip": "minecraft_08.wav",
+      "key": "question_08",
+      "text": "Fråga 8. Kan man göra verktyg av sten? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_08_result.wav",
+      "key": "question_08__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_09.wav",
+      "key": "question_09",
+      "text": "Fråga 9. Kan zombies brinna i solljus? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_09_result.wav",
+      "key": "question_09__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_10.wav",
+      "key": "question_10",
+      "text": "Fråga 10. Är Enderdraken en snäll bybo? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "quiz_question_10_result.wav",
+      "key": "question_10__result",
+      "text": "Rätt svar var B: Nej."
     }
   ],
-  "quiz": "Robotquiz",
+  "quiz": "Minecraftquiz_latt",
   "sound_dir": "/Users/serp/code/20260427-dump-uart/sound",
   "speech_clips": {
     "final__team_1": "quiz_final_team_1.wav",
@@ -154,10 +234,26 @@
     "nudge__team_2": "quiz_nudge_team_2.wav",
     "nudge__team_2__team_3": "quiz_nudge_team_2_team_3.wav",
     "nudge__team_3": "quiz_nudge_team_3.wav",
-    "question_01": "dagens_fraga.wav",
+    "question_01": "minecraft_01.wav",
     "question_01__result": "quiz_question_01_result.wav",
-    "question_02": "fraga_hast.wav",
+    "question_02": "minecraft_02.wav",
     "question_02__result": "quiz_question_02_result.wav",
+    "question_03": "minecraft_03.wav",
+    "question_03__result": "quiz_question_03_result.wav",
+    "question_04": "minecraft_04.wav",
+    "question_04__result": "quiz_question_04_result.wav",
+    "question_05": "minecraft_05.wav",
+    "question_05__result": "quiz_question_05_result.wav",
+    "question_06": "minecraft_06.wav",
+    "question_06__result": "quiz_question_06_result.wav",
+    "question_07": "minecraft_07.wav",
+    "question_07__result": "quiz_question_07_result.wav",
+    "question_08": "minecraft_08.wav",
+    "question_08__result": "quiz_question_08_result.wav",
+    "question_09": "minecraft_09.wav",
+    "question_09__result": "quiz_question_09_result.wav",
+    "question_10": "minecraft_10.wav",
+    "question_10__result": "quiz_question_10_result.wav",
     "registered__team_1": "quiz_registered_team_1.wav",
     "registered__team_1__team_2": "quiz_registered_team_1_team_2.wav",
     "registered__team_1__team_2__team_3": "quiz_registered_team_1_team_2_team_3.wav",

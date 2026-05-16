@@ -27,6 +27,7 @@ from dialog_state import (
     WorldState,
     WorldStateBuilder,
     load_quiz_config,
+    load_quiz_selector_configs,
 )
 from robot_animation import (
     SPEECH_MOTION_DEFAULT_PITCH_DEG,
@@ -240,6 +241,10 @@ class SharedCameraMjpegServer:
     def app_should_run_active_follow(self) -> bool:
         with self.app_lock:
             return self.app_controller.should_run_active_follow()
+
+    def app_preferred_target_mode(self) -> str | None:
+        with self.app_lock:
+            return self.app_controller.preferred_target_mode()
 
     def marker_detection_required(self, target_mode: str | None = None) -> bool:
         if target_mode is None:
@@ -2502,10 +2507,15 @@ def run(args: argparse.Namespace) -> int:
         teams_path=args.quiz_teams_file,
         speech_path=args.quiz_speech_file,
     )
+    selector_configs = load_quiz_selector_configs(
+        args.quiz_runtime_file,
+        teams_path=args.quiz_teams_file,
+    )
     app_controller = AppController(
         quiz_config,
         mode=args.app_mode,
         auto_start_quiz=args.auto_start_quiz,
+        selector_configs=selector_configs,
     )
     if args.app_mode == APP_MODE_QUIZ:
         app_controller.start_quiz(time.monotonic())
@@ -2560,6 +2570,7 @@ def run(args: argparse.Namespace) -> int:
     active_face_id: int | None = None
     active_marker_id: int | None = None
     last_target_revision = mjpeg_server.target_revision_snapshot()
+    last_effective_target_mode = mjpeg_server.app_preferred_target_mode() or args.target_mode
     last_face_switch_at = 0.0
     last_marker_switch_at = 0.0
     last_sent_at = 0.0
@@ -2613,10 +2624,13 @@ def run(args: argparse.Namespace) -> int:
                 continue
             engine.maybe_start_next()
             gaze_mode = mjpeg_server.gaze_mode_snapshot()
-            target_mode = mjpeg_server.target_mode_snapshot()
+            configured_target_mode = mjpeg_server.target_mode_snapshot()
+            target_mode = mjpeg_server.app_preferred_target_mode() or configured_target_mode
+            if sound_running and mjpeg_server.app_mode_snapshot() == APP_MODE_QUIZ:
+                target_mode = TARGET_MODE_FACES
             target_behavior = mjpeg_server.target_behavior_snapshot()
             target_revision = mjpeg_server.target_revision_snapshot()
-            if target_revision != last_target_revision:
+            if target_revision != last_target_revision or target_mode != last_effective_target_mode:
                 active_face_id = None
                 active_marker_id = None
                 last_target = None
@@ -2624,6 +2638,7 @@ def run(args: argparse.Namespace) -> int:
                 last_face_switch_at = now
                 last_marker_switch_at = now
                 last_target_revision = target_revision
+                last_effective_target_mode = target_mode
 
             manual_target = mjpeg_server.pop_pending_manual_gaze()
             if manual_target is not None:
@@ -2647,6 +2662,17 @@ def run(args: argparse.Namespace) -> int:
                 world = world_builder.update_from_marker_dicts(frame_dict["markers"], now)
                 mjpeg_server.set_world(world)
                 mjpeg_server.update_app(world, robot_dialog, now)
+                target_mode = mjpeg_server.app_preferred_target_mode() or configured_target_mode
+                if sound_running and mjpeg_server.app_mode_snapshot() == APP_MODE_QUIZ:
+                    target_mode = TARGET_MODE_FACES
+                if target_mode != last_effective_target_mode:
+                    active_face_id = None
+                    active_marker_id = None
+                    last_target = None
+                    last_sent_at = 0.0
+                    last_face_switch_at = now
+                    last_marker_switch_at = now
+                    last_effective_target_mode = target_mode
                 camera.set_marker_enabled(mjpeg_server.marker_detection_required(target_mode))
                 sound_running = mjpeg_server.is_sound_running()
 

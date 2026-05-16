@@ -1,0 +1,71 @@
+name: Minecraftquiz_latt
+questions:
+  - text: Kan man hugga träd i Minecraft?
+    prompt_clip: minecraft_01.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan creepers explodera?
+    prompt_clip: minecraft_02.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Är diamanter gjorda av trä?
+    prompt_clip: minecraft_03.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B
+
+  - text: Kan man bygga hus i Minecraft?
+    prompt_clip: minecraft_04.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan en gris flyga utan hjälp i Minecraft?
+    prompt_clip: minecraft_05.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B
+
+  - text: Kan man hitta lava i Minecraft?
+    prompt_clip: minecraft_06.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Är vatten farligt att nudda i Minecraft?
+    prompt_clip: minecraft_07.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B
+
+  - text: Kan man göra verktyg av sten?
+    prompt_clip: minecraft_08.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan zombies brinna i solljus?
+    prompt_clip: minecraft_09.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Är Enderdraken en snäll bybo?
+    prompt_clip: minecraft_10.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B

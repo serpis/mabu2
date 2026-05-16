@@ -1,0 +1,801 @@
+{
+  "generated_at": "2026-05-16T06:28:02Z",
+  "items": [
+    {
+      "clip": "quiz_registration_prompt.wav",
+      "key": "registration_prompt",
+      "text": "Nu börjar quizzet. Håll upp en av era svarsskyltar för att anmäla laget."
+    },
+    {
+      "clip": "quiz_registration_waiting.wav",
+      "key": "registration_waiting",
+      "text": "Jag väntar på minst ett lag. Håll upp en svarsskylt för att vara med."
+    },
+    {
+      "clip": "quiz_correct_none.wav",
+      "key": "correct__none",
+      "text": "Inget lag svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1.wav",
+      "key": "registered__team_1",
+      "text": "Anmälda lag är Lag ett. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1.wav",
+      "key": "nudge__team_1",
+      "text": "Aha, men Lag ett då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1.wav",
+      "key": "final__team_1",
+      "text": "Quizzet är slut. Vinnare är Lag ett."
+    },
+    {
+      "clip": "quiz_correct_team_1.wav",
+      "key": "correct__team_1",
+      "text": "Lag ett svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_2.wav",
+      "key": "registered__team_2",
+      "text": "Anmälda lag är Lag två. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_2.wav",
+      "key": "nudge__team_2",
+      "text": "Aha, men Lag två då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_2.wav",
+      "key": "final__team_2",
+      "text": "Quizzet är slut. Vinnare är Lag två."
+    },
+    {
+      "clip": "quiz_correct_team_2.wav",
+      "key": "correct__team_2",
+      "text": "Lag två svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_3.wav",
+      "key": "registered__team_3",
+      "text": "Anmälda lag är Lag tre. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_3.wav",
+      "key": "nudge__team_3",
+      "text": "Aha, men Lag tre då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_3.wav",
+      "key": "final__team_3",
+      "text": "Quizzet är slut. Vinnare är Lag tre."
+    },
+    {
+      "clip": "quiz_correct_team_3.wav",
+      "key": "correct__team_3",
+      "text": "Lag tre svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_4.wav",
+      "key": "registered__team_4",
+      "text": "Anmälda lag är Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_4.wav",
+      "key": "nudge__team_4",
+      "text": "Aha, men Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_4.wav",
+      "key": "final__team_4",
+      "text": "Quizzet är slut. Vinnare är Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_4.wav",
+      "key": "correct__team_4",
+      "text": "Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1_team_2.wav",
+      "key": "registered__team_1__team_2",
+      "text": "Anmälda lag är Lag ett och Lag två. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1_team_2.wav",
+      "key": "nudge__team_1__team_2",
+      "text": "Aha, men Lag ett och Lag två då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1_team_2.wav",
+      "key": "final__team_1__team_2",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett och Lag två."
+    },
+    {
+      "clip": "quiz_correct_team_1_team_2.wav",
+      "key": "correct__team_1__team_2",
+      "text": "Lag ett och Lag två svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1_team_3.wav",
+      "key": "registered__team_1__team_3",
+      "text": "Anmälda lag är Lag ett och Lag tre. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1_team_3.wav",
+      "key": "nudge__team_1__team_3",
+      "text": "Aha, men Lag ett och Lag tre då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1_team_3.wav",
+      "key": "final__team_1__team_3",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett och Lag tre."
+    },
+    {
+      "clip": "quiz_correct_team_1_team_3.wav",
+      "key": "correct__team_1__team_3",
+      "text": "Lag ett och Lag tre svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1_team_4.wav",
+      "key": "registered__team_1__team_4",
+      "text": "Anmälda lag är Lag ett och Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1_team_4.wav",
+      "key": "nudge__team_1__team_4",
+      "text": "Aha, men Lag ett och Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1_team_4.wav",
+      "key": "final__team_1__team_4",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett och Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_1_team_4.wav",
+      "key": "correct__team_1__team_4",
+      "text": "Lag ett och Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_2_team_3.wav",
+      "key": "registered__team_2__team_3",
+      "text": "Anmälda lag är Lag två och Lag tre. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_2_team_3.wav",
+      "key": "nudge__team_2__team_3",
+      "text": "Aha, men Lag två och Lag tre då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_2_team_3.wav",
+      "key": "final__team_2__team_3",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag två och Lag tre."
+    },
+    {
+      "clip": "quiz_correct_team_2_team_3.wav",
+      "key": "correct__team_2__team_3",
+      "text": "Lag två och Lag tre svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_2_team_4.wav",
+      "key": "registered__team_2__team_4",
+      "text": "Anmälda lag är Lag två och Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_2_team_4.wav",
+      "key": "nudge__team_2__team_4",
+      "text": "Aha, men Lag två och Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_2_team_4.wav",
+      "key": "final__team_2__team_4",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag två och Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_2_team_4.wav",
+      "key": "correct__team_2__team_4",
+      "text": "Lag två och Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_3_team_4.wav",
+      "key": "registered__team_3__team_4",
+      "text": "Anmälda lag är Lag tre och Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_3_team_4.wav",
+      "key": "nudge__team_3__team_4",
+      "text": "Aha, men Lag tre och Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_3_team_4.wav",
+      "key": "final__team_3__team_4",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag tre och Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_3_team_4.wav",
+      "key": "correct__team_3__team_4",
+      "text": "Lag tre och Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1_team_2_team_3.wav",
+      "key": "registered__team_1__team_2__team_3",
+      "text": "Anmälda lag är Lag ett, Lag två och Lag tre. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1_team_2_team_3.wav",
+      "key": "nudge__team_1__team_2__team_3",
+      "text": "Aha, men Lag ett, Lag två och Lag tre då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1_team_2_team_3.wav",
+      "key": "final__team_1__team_2__team_3",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett, Lag två och Lag tre."
+    },
+    {
+      "clip": "quiz_correct_team_1_team_2_team_3.wav",
+      "key": "correct__team_1__team_2__team_3",
+      "text": "Lag ett, Lag två och Lag tre svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1_team_2_team_4.wav",
+      "key": "registered__team_1__team_2__team_4",
+      "text": "Anmälda lag är Lag ett, Lag två och Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1_team_2_team_4.wav",
+      "key": "nudge__team_1__team_2__team_4",
+      "text": "Aha, men Lag ett, Lag två och Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1_team_2_team_4.wav",
+      "key": "final__team_1__team_2__team_4",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett, Lag två och Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_1_team_2_team_4.wav",
+      "key": "correct__team_1__team_2__team_4",
+      "text": "Lag ett, Lag två och Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1_team_3_team_4.wav",
+      "key": "registered__team_1__team_3__team_4",
+      "text": "Anmälda lag är Lag ett, Lag tre och Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1_team_3_team_4.wav",
+      "key": "nudge__team_1__team_3__team_4",
+      "text": "Aha, men Lag ett, Lag tre och Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1_team_3_team_4.wav",
+      "key": "final__team_1__team_3__team_4",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett, Lag tre och Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_1_team_3_team_4.wav",
+      "key": "correct__team_1__team_3__team_4",
+      "text": "Lag ett, Lag tre och Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_2_team_3_team_4.wav",
+      "key": "registered__team_2__team_3__team_4",
+      "text": "Anmälda lag är Lag två, Lag tre och Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_2_team_3_team_4.wav",
+      "key": "nudge__team_2__team_3__team_4",
+      "text": "Aha, men Lag två, Lag tre och Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_2_team_3_team_4.wav",
+      "key": "final__team_2__team_3__team_4",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag två, Lag tre och Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_2_team_3_team_4.wav",
+      "key": "correct__team_2__team_3__team_4",
+      "text": "Lag två, Lag tre och Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_registered_team_1_team_2_team_3_team_4.wav",
+      "key": "registered__team_1__team_2__team_3__team_4",
+      "text": "Anmälda lag är Lag ett, Lag två, Lag tre och Lag fyra. Då kör vi."
+    },
+    {
+      "clip": "quiz_nudge_team_1_team_2_team_3_team_4.wav",
+      "key": "nudge__team_1__team_2__team_3__team_4",
+      "text": "Aha, men Lag ett, Lag två, Lag tre och Lag fyra då, vad svarar ni?"
+    },
+    {
+      "clip": "quiz_final_team_1_team_2_team_3_team_4.wav",
+      "key": "final__team_1__team_2__team_3__team_4",
+      "text": "Quizzet är slut. Det blev oavgjort mellan Lag ett, Lag två, Lag tre och Lag fyra."
+    },
+    {
+      "clip": "quiz_correct_team_1_team_2_team_3_team_4.wav",
+      "key": "correct__team_1__team_2__team_3__team_4",
+      "text": "Lag ett, Lag två, Lag tre och Lag fyra svarade rätt."
+    },
+    {
+      "clip": "quiz_final_intro.wav",
+      "key": "final_intro",
+      "text": "Quizzet är slut. Här är slutresultatet."
+    },
+    {
+      "clip": "quiz_final_place_1.wav",
+      "key": "final_place__1",
+      "text": "På första plats."
+    },
+    {
+      "clip": "quiz_final_place_2.wav",
+      "key": "final_place__2",
+      "text": "På andra plats."
+    },
+    {
+      "clip": "quiz_final_place_3.wav",
+      "key": "final_place__3",
+      "text": "På tredje plats."
+    },
+    {
+      "clip": "quiz_final_place_4.wav",
+      "key": "final_place__4",
+      "text": "På fjärde plats."
+    },
+    {
+      "clip": "quiz_final_score_team_1_0.wav",
+      "key": "final_score__team_1__0",
+      "text": "Lag ett fick noll poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_1.wav",
+      "key": "final_score__team_1__1",
+      "text": "Lag ett fick en poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_2.wav",
+      "key": "final_score__team_1__2",
+      "text": "Lag ett fick två poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_3.wav",
+      "key": "final_score__team_1__3",
+      "text": "Lag ett fick tre poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_4.wav",
+      "key": "final_score__team_1__4",
+      "text": "Lag ett fick fyra poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_5.wav",
+      "key": "final_score__team_1__5",
+      "text": "Lag ett fick fem poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_6.wav",
+      "key": "final_score__team_1__6",
+      "text": "Lag ett fick sex poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_7.wav",
+      "key": "final_score__team_1__7",
+      "text": "Lag ett fick sju poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_8.wav",
+      "key": "final_score__team_1__8",
+      "text": "Lag ett fick åtta poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_9.wav",
+      "key": "final_score__team_1__9",
+      "text": "Lag ett fick nio poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_1_10.wav",
+      "key": "final_score__team_1__10",
+      "text": "Lag ett fick tio poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_0.wav",
+      "key": "final_score__team_2__0",
+      "text": "Lag två fick noll poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_1.wav",
+      "key": "final_score__team_2__1",
+      "text": "Lag två fick en poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_2.wav",
+      "key": "final_score__team_2__2",
+      "text": "Lag två fick två poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_3.wav",
+      "key": "final_score__team_2__3",
+      "text": "Lag två fick tre poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_4.wav",
+      "key": "final_score__team_2__4",
+      "text": "Lag två fick fyra poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_5.wav",
+      "key": "final_score__team_2__5",
+      "text": "Lag två fick fem poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_6.wav",
+      "key": "final_score__team_2__6",
+      "text": "Lag två fick sex poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_7.wav",
+      "key": "final_score__team_2__7",
+      "text": "Lag två fick sju poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_8.wav",
+      "key": "final_score__team_2__8",
+      "text": "Lag två fick åtta poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_9.wav",
+      "key": "final_score__team_2__9",
+      "text": "Lag två fick nio poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_2_10.wav",
+      "key": "final_score__team_2__10",
+      "text": "Lag två fick tio poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_0.wav",
+      "key": "final_score__team_3__0",
+      "text": "Lag tre fick noll poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_1.wav",
+      "key": "final_score__team_3__1",
+      "text": "Lag tre fick en poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_2.wav",
+      "key": "final_score__team_3__2",
+      "text": "Lag tre fick två poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_3.wav",
+      "key": "final_score__team_3__3",
+      "text": "Lag tre fick tre poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_4.wav",
+      "key": "final_score__team_3__4",
+      "text": "Lag tre fick fyra poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_5.wav",
+      "key": "final_score__team_3__5",
+      "text": "Lag tre fick fem poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_6.wav",
+      "key": "final_score__team_3__6",
+      "text": "Lag tre fick sex poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_7.wav",
+      "key": "final_score__team_3__7",
+      "text": "Lag tre fick sju poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_8.wav",
+      "key": "final_score__team_3__8",
+      "text": "Lag tre fick åtta poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_9.wav",
+      "key": "final_score__team_3__9",
+      "text": "Lag tre fick nio poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_3_10.wav",
+      "key": "final_score__team_3__10",
+      "text": "Lag tre fick tio poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_0.wav",
+      "key": "final_score__team_4__0",
+      "text": "Lag fyra fick noll poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_1.wav",
+      "key": "final_score__team_4__1",
+      "text": "Lag fyra fick en poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_2.wav",
+      "key": "final_score__team_4__2",
+      "text": "Lag fyra fick två poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_3.wav",
+      "key": "final_score__team_4__3",
+      "text": "Lag fyra fick tre poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_4.wav",
+      "key": "final_score__team_4__4",
+      "text": "Lag fyra fick fyra poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_5.wav",
+      "key": "final_score__team_4__5",
+      "text": "Lag fyra fick fem poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_6.wav",
+      "key": "final_score__team_4__6",
+      "text": "Lag fyra fick sex poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_7.wav",
+      "key": "final_score__team_4__7",
+      "text": "Lag fyra fick sju poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_8.wav",
+      "key": "final_score__team_4__8",
+      "text": "Lag fyra fick åtta poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_9.wav",
+      "key": "final_score__team_4__9",
+      "text": "Lag fyra fick nio poäng."
+    },
+    {
+      "clip": "quiz_final_score_team_4_10.wav",
+      "key": "final_score__team_4__10",
+      "text": "Lag fyra fick tio poäng."
+    },
+    {
+      "clip": "minecraft_med_01.wav",
+      "key": "question_01",
+      "text": "Fråga 1. Kan man göra en säng av ull och träplankor? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_01_result.wav",
+      "key": "question_01__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_med_02.wav",
+      "key": "question_02",
+      "text": "Fråga 2. Kan man tämja en varg med ben? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_02_result.wav",
+      "key": "question_02__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_med_03.wav",
+      "key": "question_03",
+      "text": "Fråga 3. Kan man göra glas genom att smälta sand? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_03_result.wav",
+      "key": "question_03__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_med_04.wav",
+      "key": "question_04",
+      "text": "Fråga 4. Är obsidian snabbare att hugga än jord? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_04_result.wav",
+      "key": "question_04__result",
+      "text": "Rätt svar var B: Nej."
+    },
+    {
+      "clip": "minecraft_med_05.wav",
+      "key": "question_05",
+      "text": "Fråga 5. Kan man odla vete från frön? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_05_result.wav",
+      "key": "question_05__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_med_06.wav",
+      "key": "question_06",
+      "text": "Fråga 6. Kan man andas hur länge som helst under vatten utan hjälp? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_06_result.wav",
+      "key": "question_06__result",
+      "text": "Rätt svar var B: Nej."
+    },
+    {
+      "clip": "minecraft_med_07.wav",
+      "key": "question_07",
+      "text": "Fråga 7. Kan man använda en hink för att plocka upp lava? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_07_result.wav",
+      "key": "question_07__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_med_08.wav",
+      "key": "question_08",
+      "text": "Fråga 8. Släpper skelett ibland pilar när de dör? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_08_result.wav",
+      "key": "question_08__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_med_09.wav",
+      "key": "question_09",
+      "text": "Fråga 9. Kan man göra papper av sockerrör? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_09_result.wav",
+      "key": "question_09__result",
+      "text": "Rätt svar var A: Ja."
+    },
+    {
+      "clip": "minecraft_med_10.wav",
+      "key": "question_10",
+      "text": "Fråga 10. Är Nether samma dimension som The End? Svar A: Ja. Svar B: Nej."
+    },
+    {
+      "clip": "minecraft_med_10_result.wav",
+      "key": "question_10__result",
+      "text": "Rätt svar var B: Nej."
+    }
+  ],
+  "quiz": "Minecraftquiz_medelsvart",
+  "sound_dir": "/Users/serp/code/20260427-dump-uart/sound",
+  "speech_clips": {
+    "correct__none": "quiz_correct_none.wav",
+    "correct__team_1": "quiz_correct_team_1.wav",
+    "correct__team_1__team_2": "quiz_correct_team_1_team_2.wav",
+    "correct__team_1__team_2__team_3": "quiz_correct_team_1_team_2_team_3.wav",
+    "correct__team_1__team_2__team_3__team_4": "quiz_correct_team_1_team_2_team_3_team_4.wav",
+    "correct__team_1__team_2__team_4": "quiz_correct_team_1_team_2_team_4.wav",
+    "correct__team_1__team_3": "quiz_correct_team_1_team_3.wav",
+    "correct__team_1__team_3__team_4": "quiz_correct_team_1_team_3_team_4.wav",
+    "correct__team_1__team_4": "quiz_correct_team_1_team_4.wav",
+    "correct__team_2": "quiz_correct_team_2.wav",
+    "correct__team_2__team_3": "quiz_correct_team_2_team_3.wav",
+    "correct__team_2__team_3__team_4": "quiz_correct_team_2_team_3_team_4.wav",
+    "correct__team_2__team_4": "quiz_correct_team_2_team_4.wav",
+    "correct__team_3": "quiz_correct_team_3.wav",
+    "correct__team_3__team_4": "quiz_correct_team_3_team_4.wav",
+    "correct__team_4": "quiz_correct_team_4.wav",
+    "final__team_1": "quiz_final_team_1.wav",
+    "final__team_1__team_2": "quiz_final_team_1_team_2.wav",
+    "final__team_1__team_2__team_3": "quiz_final_team_1_team_2_team_3.wav",
+    "final__team_1__team_2__team_3__team_4": "quiz_final_team_1_team_2_team_3_team_4.wav",
+    "final__team_1__team_2__team_4": "quiz_final_team_1_team_2_team_4.wav",
+    "final__team_1__team_3": "quiz_final_team_1_team_3.wav",
+    "final__team_1__team_3__team_4": "quiz_final_team_1_team_3_team_4.wav",
+    "final__team_1__team_4": "quiz_final_team_1_team_4.wav",
+    "final__team_2": "quiz_final_team_2.wav",
+    "final__team_2__team_3": "quiz_final_team_2_team_3.wav",
+    "final__team_2__team_3__team_4": "quiz_final_team_2_team_3_team_4.wav",
+    "final__team_2__team_4": "quiz_final_team_2_team_4.wav",
+    "final__team_3": "quiz_final_team_3.wav",
+    "final__team_3__team_4": "quiz_final_team_3_team_4.wav",
+    "final__team_4": "quiz_final_team_4.wav",
+    "final_intro": "quiz_final_intro.wav",
+    "final_place__1": "quiz_final_place_1.wav",
+    "final_place__2": "quiz_final_place_2.wav",
+    "final_place__3": "quiz_final_place_3.wav",
+    "final_place__4": "quiz_final_place_4.wav",
+    "final_score__team_1__0": "quiz_final_score_team_1_0.wav",
+    "final_score__team_1__1": "quiz_final_score_team_1_1.wav",
+    "final_score__team_1__10": "quiz_final_score_team_1_10.wav",
+    "final_score__team_1__2": "quiz_final_score_team_1_2.wav",
+    "final_score__team_1__3": "quiz_final_score_team_1_3.wav",
+    "final_score__team_1__4": "quiz_final_score_team_1_4.wav",
+    "final_score__team_1__5": "quiz_final_score_team_1_5.wav",
+    "final_score__team_1__6": "quiz_final_score_team_1_6.wav",
+    "final_score__team_1__7": "quiz_final_score_team_1_7.wav",
+    "final_score__team_1__8": "quiz_final_score_team_1_8.wav",
+    "final_score__team_1__9": "quiz_final_score_team_1_9.wav",
+    "final_score__team_2__0": "quiz_final_score_team_2_0.wav",
+    "final_score__team_2__1": "quiz_final_score_team_2_1.wav",
+    "final_score__team_2__10": "quiz_final_score_team_2_10.wav",
+    "final_score__team_2__2": "quiz_final_score_team_2_2.wav",
+    "final_score__team_2__3": "quiz_final_score_team_2_3.wav",
+    "final_score__team_2__4": "quiz_final_score_team_2_4.wav",
+    "final_score__team_2__5": "quiz_final_score_team_2_5.wav",
+    "final_score__team_2__6": "quiz_final_score_team_2_6.wav",
+    "final_score__team_2__7": "quiz_final_score_team_2_7.wav",
+    "final_score__team_2__8": "quiz_final_score_team_2_8.wav",
+    "final_score__team_2__9": "quiz_final_score_team_2_9.wav",
+    "final_score__team_3__0": "quiz_final_score_team_3_0.wav",
+    "final_score__team_3__1": "quiz_final_score_team_3_1.wav",
+    "final_score__team_3__10": "quiz_final_score_team_3_10.wav",
+    "final_score__team_3__2": "quiz_final_score_team_3_2.wav",
+    "final_score__team_3__3": "quiz_final_score_team_3_3.wav",
+    "final_score__team_3__4": "quiz_final_score_team_3_4.wav",
+    "final_score__team_3__5": "quiz_final_score_team_3_5.wav",
+    "final_score__team_3__6": "quiz_final_score_team_3_6.wav",
+    "final_score__team_3__7": "quiz_final_score_team_3_7.wav",
+    "final_score__team_3__8": "quiz_final_score_team_3_8.wav",
+    "final_score__team_3__9": "quiz_final_score_team_3_9.wav",
+    "final_score__team_4__0": "quiz_final_score_team_4_0.wav",
+    "final_score__team_4__1": "quiz_final_score_team_4_1.wav",
+    "final_score__team_4__10": "quiz_final_score_team_4_10.wav",
+    "final_score__team_4__2": "quiz_final_score_team_4_2.wav",
+    "final_score__team_4__3": "quiz_final_score_team_4_3.wav",
+    "final_score__team_4__4": "quiz_final_score_team_4_4.wav",
+    "final_score__team_4__5": "quiz_final_score_team_4_5.wav",
+    "final_score__team_4__6": "quiz_final_score_team_4_6.wav",
+    "final_score__team_4__7": "quiz_final_score_team_4_7.wav",
+    "final_score__team_4__8": "quiz_final_score_team_4_8.wav",
+    "final_score__team_4__9": "quiz_final_score_team_4_9.wav",
+    "nudge__team_1": "quiz_nudge_team_1.wav",
+    "nudge__team_1__team_2": "quiz_nudge_team_1_team_2.wav",
+    "nudge__team_1__team_2__team_3": "quiz_nudge_team_1_team_2_team_3.wav",
+    "nudge__team_1__team_2__team_3__team_4": "quiz_nudge_team_1_team_2_team_3_team_4.wav",
+    "nudge__team_1__team_2__team_4": "quiz_nudge_team_1_team_2_team_4.wav",
+    "nudge__team_1__team_3": "quiz_nudge_team_1_team_3.wav",
+    "nudge__team_1__team_3__team_4": "quiz_nudge_team_1_team_3_team_4.wav",
+    "nudge__team_1__team_4": "quiz_nudge_team_1_team_4.wav",
+    "nudge__team_2": "quiz_nudge_team_2.wav",
+    "nudge__team_2__team_3": "quiz_nudge_team_2_team_3.wav",
+    "nudge__team_2__team_3__team_4": "quiz_nudge_team_2_team_3_team_4.wav",
+    "nudge__team_2__team_4": "quiz_nudge_team_2_team_4.wav",
+    "nudge__team_3": "quiz_nudge_team_3.wav",
+    "nudge__team_3__team_4": "quiz_nudge_team_3_team_4.wav",
+    "nudge__team_4": "quiz_nudge_team_4.wav",
+    "question_01": "minecraft_med_01.wav",
+    "question_01__result": "minecraft_med_01_result.wav",
+    "question_02": "minecraft_med_02.wav",
+    "question_02__result": "minecraft_med_02_result.wav",
+    "question_03": "minecraft_med_03.wav",
+    "question_03__result": "minecraft_med_03_result.wav",
+    "question_04": "minecraft_med_04.wav",
+    "question_04__result": "minecraft_med_04_result.wav",
+    "question_05": "minecraft_med_05.wav",
+    "question_05__result": "minecraft_med_05_result.wav",
+    "question_06": "minecraft_med_06.wav",
+    "question_06__result": "minecraft_med_06_result.wav",
+    "question_07": "minecraft_med_07.wav",
+    "question_07__result": "minecraft_med_07_result.wav",
+    "question_08": "minecraft_med_08.wav",
+    "question_08__result": "minecraft_med_08_result.wav",
+    "question_09": "minecraft_med_09.wav",
+    "question_09__result": "minecraft_med_09_result.wav",
+    "question_10": "minecraft_med_10.wav",
+    "question_10__result": "minecraft_med_10_result.wav",
+    "registered__team_1": "quiz_registered_team_1.wav",
+    "registered__team_1__team_2": "quiz_registered_team_1_team_2.wav",
+    "registered__team_1__team_2__team_3": "quiz_registered_team_1_team_2_team_3.wav",
+    "registered__team_1__team_2__team_3__team_4": "quiz_registered_team_1_team_2_team_3_team_4.wav",
+    "registered__team_1__team_2__team_4": "quiz_registered_team_1_team_2_team_4.wav",
+    "registered__team_1__team_3": "quiz_registered_team_1_team_3.wav",
+    "registered__team_1__team_3__team_4": "quiz_registered_team_1_team_3_team_4.wav",
+    "registered__team_1__team_4": "quiz_registered_team_1_team_4.wav",
+    "registered__team_2": "quiz_registered_team_2.wav",
+    "registered__team_2__team_3": "quiz_registered_team_2_team_3.wav",
+    "registered__team_2__team_3__team_4": "quiz_registered_team_2_team_3_team_4.wav",
+    "registered__team_2__team_4": "quiz_registered_team_2_team_4.wav",
+    "registered__team_3": "quiz_registered_team_3.wav",
+    "registered__team_3__team_4": "quiz_registered_team_3_team_4.wav",
+    "registered__team_4": "quiz_registered_team_4.wav",
+    "registration_prompt": "quiz_registration_prompt.wav",
+    "registration_waiting": "quiz_registration_waiting.wav"
+  }
+}

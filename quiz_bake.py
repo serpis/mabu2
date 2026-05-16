@@ -15,6 +15,9 @@ from typing import Any
 from dialog_state import (
     QuizConfig,
     QuizQuestion,
+    correct_subset_speech_key,
+    final_place_speech_key,
+    final_score_speech_key,
     format_name_list,
     load_quiz_config,
     player_subset_speech_key,
@@ -25,8 +28,9 @@ from dialog_state import (
 ROOT = Path(__file__).resolve().parent
 DEFAULT_TTS_DIR = Path("/Users/serp/code/20260508-tts")
 DEFAULT_REF_TEXT = (
-    "Dagens fråga. En tidning har gjort en rundfråga. "
-    "Så här svarade några på de här frågorna."
+    #"Dagens fråga. En tidning har gjort en rundfråga. "
+    #"Så här svarade några på de här frågorna."
+    "Tjena gosse nu ska vi ha en riktigt svår fråga om Minecraft."
 )
 
 
@@ -42,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sound-dir", default=str(ROOT / "sound"))
     parser.add_argument("--tts-dir", default=str(DEFAULT_TTS_DIR))
     parser.add_argument("--tts-python", default=None)
-    parser.add_argument("--ref-audio", default=str(DEFAULT_TTS_DIR / "dagens_fraga.wav"))
+    parser.add_argument("--ref-audio", default=str(DEFAULT_TTS_DIR / "svar_fraga_om_minecraft.wav"))
     parser.add_argument("--ref-text", default=DEFAULT_REF_TEXT)
     parser.add_argument("--device", default="mps")
     parser.add_argument("--dtype", default="float16")
@@ -110,6 +114,46 @@ def final_text(config: QuizConfig, player_ids: tuple[str, ...]) -> str:
     return f"Quizzet är slut. Det blev oavgjort mellan {format_name_list(names)}."
 
 
+def correct_subset_text(config: QuizConfig, player_ids: tuple[str, ...]) -> str:
+    if not player_ids:
+        return "Inget lag svarade rätt."
+    names = [config.player_name(player_id) for player_id in player_ids]
+    return f"{format_name_list(names)} svarade rätt."
+
+
+def place_text(place: int) -> str:
+    ordinals = {
+        1: "första",
+        2: "andra",
+        3: "tredje",
+        4: "fjärde",
+    }
+    label = ordinals.get(place, str(place))
+    return f"På {label} plats."
+
+
+def score_text(score: int) -> str:
+    numbers = {
+        0: "noll",
+        1: "en",
+        2: "två",
+        3: "tre",
+        4: "fyra",
+        5: "fem",
+        6: "sex",
+        7: "sju",
+        8: "åtta",
+        9: "nio",
+        10: "tio",
+    }
+    return numbers.get(score, str(score))
+
+
+def final_score_text(config: QuizConfig, player_id: str, score: int) -> str:
+    point_word = "poäng"
+    return f"{config.player_name(player_id)} fick {score_text(score)} {point_word}."
+
+
 def add_item(
     items: list[dict[str, str]],
     speech_clips: dict[str, str],
@@ -142,6 +186,13 @@ def build_bake_items(config: QuizConfig) -> tuple[list[dict[str, str]], dict[str
     )
 
     player_ids = config.player_ids
+    add_item(
+        items,
+        speech_clips,
+        key=correct_subset_speech_key(()),
+        clip="quiz_correct_none.wav",
+        text=correct_subset_text(config, ()),
+    )
     for subset in non_empty_subsets(player_ids):
         add_item(
             items,
@@ -164,6 +215,38 @@ def build_bake_items(config: QuizConfig) -> tuple[list[dict[str, str]], dict[str
             clip=clip_name("quiz_final", *subset),
             text=final_text(config, subset),
         )
+        add_item(
+            items,
+            speech_clips,
+            key=correct_subset_speech_key(subset),
+            clip=clip_name("quiz_correct", *subset),
+            text=correct_subset_text(config, subset),
+        )
+
+    add_item(
+        items,
+        speech_clips,
+        key="final_intro",
+        clip="quiz_final_intro.wav",
+        text="Quizzet är slut. Här är slutresultatet.",
+    )
+    for place in range(1, len(player_ids) + 1):
+        add_item(
+            items,
+            speech_clips,
+            key=final_place_speech_key(place),
+            clip=clip_name("quiz_final_place", str(place)),
+            text=place_text(place),
+        )
+    for player_id in player_ids:
+        for score in range(len(config.questions) + 1):
+            add_item(
+                items,
+                speech_clips,
+                key=final_score_speech_key(player_id, score),
+                clip=clip_name("quiz_final_score", player_id, str(score)),
+                text=final_score_text(config, player_id, score),
+            )
 
     for index, question in enumerate(config.questions):
         prompt_clip = question.prompt_clip or clip_name("quiz_question", f"{index + 1:02d}")
@@ -174,7 +257,12 @@ def build_bake_items(config: QuizConfig) -> tuple[list[dict[str, str]], dict[str
             clip=prompt_clip,
             text=question_prompt_text(index, question),
         )
-        result_clip = question.result_clip or clip_name("quiz_question", f"{index + 1:02d}", "result")
+        if question.result_clip:
+            result_clip = question.result_clip
+        elif question.prompt_clip:
+            result_clip = f"{Path(prompt_clip).stem}_result.wav"
+        else:
+            result_clip = clip_name("quiz_question", f"{index + 1:02d}", "result")
         add_item(
             items,
             speech_clips,

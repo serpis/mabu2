@@ -306,6 +306,18 @@ def question_speech_key(question_index: int, suffix: str | None = None) -> str:
     return key
 
 
+def correct_subset_speech_key(player_ids: tuple[str, ...] | list[str]) -> str:
+    return player_subset_speech_key("correct", player_ids) if player_ids else "correct__none"
+
+
+def final_place_speech_key(place: int) -> str:
+    return speech_key("final_place", str(place))
+
+
+def final_score_speech_key(player_id: str, score: int) -> str:
+    return speech_key("final_score", player_id, str(score))
+
+
 class QuizSession:
     def __init__(self, config: QuizConfig) -> None:
         self.config = config
@@ -320,6 +332,8 @@ class QuizSession:
         self.registration_prompt_played = False
         self.registration_waiting_played = False
         self.pending_final_after_result = False
+        self.pending_result_clips: list[str] = []
+        self.pending_final_clips: list[str] = []
         self.answer_tracker: StableAnswerTracker | None = None
         self.locked_answers: dict[str, str | None] = {}
         self.missing_players: list[str] = []
@@ -342,6 +356,8 @@ class QuizSession:
         self.registration_prompt_played = False
         self.registration_waiting_played = False
         self.pending_final_after_result = False
+        self.pending_result_clips = []
+        self.pending_final_clips = []
         self.answer_tracker = None
         self.locked_answers = {}
         self.missing_players = []
@@ -356,6 +372,8 @@ class QuizSession:
         self.registration_first_player_at = None
         self.registration_tracker = None
         self.pending_final_after_result = False
+        self.pending_result_clips = []
+        self.pending_final_clips = []
         self.answer_tracker = None
         self.last_event = phase
 
@@ -499,14 +517,18 @@ class QuizSession:
         if self.phase == "speaking_result":
             if robot.is_speaking():
                 return
+            if self._speak_next_pending_clip(robot, self.pending_result_clips):
+                return
             if self.pending_final_after_result:
-                self._speak_final(robot, now)
+                self._start_final(robot, now)
             else:
                 self._set_phase("between_questions", now)
             return
 
         if self.phase == "speaking_final":
-            if not robot.is_speaking():
+            if robot.is_speaking():
+                return
+            if not self._speak_next_pending_clip(robot, self.pending_final_clips):
                 self._finish(now)
             return
 
@@ -531,35 +553,67 @@ class QuizSession:
         if question is None:
             self._finish(now)
             return
+        correct_player_ids = tuple(
+            player_id
+            for player_id in self.registered_player_ids
+            if self.locked_answers.get(player_id) == question.correct
+        )
         for player_id, answer in self.locked_answers.items():
             if answer == question.correct:
                 self.scores[player_id] = self.scores.get(player_id, 0) + 1
         self.last_event = "scored_question"
         self.pending_final_after_result = self.question_index >= len(self.config.questions) - 1
-        clip = question.result_clip or self._speech_clip(
+        result_clip = question.result_clip or self._speech_clip(
             question_speech_key(self.question_index, "result")
         )
-        if clip:
-            result = robot.speak_to_group(clip)
-            if result.get("ok") is False:
-                self.last_error = str(result.get("error") or result.get("status") or "sound failed")
+        correct_clip = self._speech_clip(correct_subset_speech_key(correct_player_ids))
+        self.pending_result_clips = [
+            clip
+            for clip in (result_clip, correct_clip)
+            if clip
+        ]
+        if self._speak_next_pending_clip(robot, self.pending_result_clips):
             self._set_phase("speaking_result", now)
             return
         if self.pending_final_after_result:
-            self._speak_final(robot, now)
+            self._start_final(robot, now)
         else:
             self._set_phase("between_questions", now)
 
-    def _speak_final(self, robot: RobotDialogPort, now: float) -> None:
+    def _start_final(self, robot: RobotDialogPort, now: float) -> None:
         self.pending_final_after_result = False
-        clip = self._speech_clip(player_subset_speech_key("final", tuple(self.winner_ids())))
-        if not clip:
+        self.pending_final_clips = self._final_clips()
+        if not self._speak_next_pending_clip(robot, self.pending_final_clips):
             self._finish(now)
             return
+        self._set_phase("speaking_final", now)
+
+    def _speak_next_pending_clip(
+        self,
+        robot: RobotDialogPort,
+        pending_clips: list[str],
+    ) -> bool:
+        if not pending_clips:
+            return False
+        clip = pending_clips.pop(0)
         result = robot.speak_to_group(clip)
         if result.get("ok") is False:
             self.last_error = str(result.get("error") or result.get("status") or "sound failed")
-        self._set_phase("speaking_final", now)
+        return True
+
+    def _final_clips(self) -> list[str]:
+        clips = []
+        intro_clip = self._speech_clip("final_intro")
+        if intro_clip:
+            clips.append(intro_clip)
+        for player_id, score, place in self.final_standings():
+            place_clip = self._speech_clip(final_place_speech_key(place))
+            score_clip = self._speech_clip(final_score_speech_key(player_id, score))
+            if place_clip:
+                clips.append(place_clip)
+            if score_clip:
+                clips.append(score_clip)
+        return clips
 
     def _finish(self, now: float) -> None:
         self.running = False
@@ -634,19 +688,32 @@ class QuizSession:
         best_score = max(self.scores.values())
         return [player_id for player_id, score in self.scores.items() if score == best_score]
 
+    def final_standings(self) -> list[tuple[str, int, int]]:
+        standings = []
+        for player_id in self.registered_player_ids:
+            score = self.scores.get(player_id, 0)
+            place = 1 + sum(other_score > score for other_score in self.scores.values())
+            standings.append((player_id, score, place))
+        return sorted(standings, key=lambda item: (item[1], -item[2], item[0]))
+
 
 class IdleBehavior:
-    def __init__(self, config: QuizConfig) -> None:
-        self.config = config
-        self.phase = "watching_start_marker"
+    def __init__(self, selector_configs: dict[int, QuizConfig]) -> None:
+        self.selector_configs = dict(selector_configs)
+        self.phase = (
+            "watching_quiz_selector"
+            if len(self.selector_configs) != 1
+            else "watching_start_marker"
+        )
 
-    def update(self, world: WorldState, now: float) -> str | None:
-        if world.marker_stable(
-            self.config.start_marker_id,
-            stable_for_s=self.config.stable_start_s,
-            now=now,
-        ):
-            return "start_quiz"
+    def update(self, world: WorldState, now: float) -> int | None:
+        for marker_id, config in sorted(self.selector_configs.items()):
+            if world.marker_stable(
+                marker_id,
+                stable_for_s=config.stable_start_s,
+                now=now,
+            ):
+                return marker_id
         return None
 
 
@@ -657,14 +724,19 @@ class AppController:
         *,
         mode: str = APP_MODE_ACTIVE,
         auto_start_quiz: bool = True,
+        selector_configs: dict[int, QuizConfig] | None = None,
     ) -> None:
         if mode not in APP_MODES:
             mode = APP_MODE_ACTIVE
         self.config = config
         self.mode = mode
         self.auto_start_quiz = auto_start_quiz
-        self.idle = IdleBehavior(config)
+        self.selector_configs = dict(selector_configs or {})
+        if not self.selector_configs and config.start_marker_id is not None:
+            self.selector_configs[config.start_marker_id] = config
+        self.idle = IdleBehavior(self.selector_configs)
         self.quiz = QuizSession(config)
+        self.selected_marker_id: int | None = None
         self.last_event: str | None = None
 
     def set_mode(self, mode: str, now: float) -> None:
@@ -677,10 +749,22 @@ class AppController:
         if mode == APP_MODE_QUIZ and not self.quiz.running:
             self.quiz.start(now)
 
-    def start_quiz(self, now: float) -> None:
+    def start_quiz(
+        self,
+        now: float,
+        *,
+        config: QuizConfig | None = None,
+        marker_id: int | None = None,
+    ) -> None:
+        if config is not None and config is not self.config:
+            self.config = config
+            self.quiz = QuizSession(config)
         self.mode = APP_MODE_QUIZ
         self.quiz.start(now)
-        self.last_event = "start_quiz"
+        self.selected_marker_id = marker_id
+        self.last_event = (
+            f"start_quiz:{marker_id}" if marker_id is not None else "start_quiz"
+        )
 
     def stop_quiz(self, now: float, *, next_mode: str | None = None) -> None:
         self.quiz.stop(now)
@@ -694,17 +778,33 @@ class AppController:
         self.last_event = "reset_quiz"
 
     def update(self, world: WorldState, robot: RobotDialogPort, now: float) -> None:
-        if self.mode == APP_MODE_IDLE and self.auto_start_quiz:
-            event = self.idle.update(world, now)
-            if event == "start_quiz":
-                self.start_quiz(now)
+        if self.mode != APP_MODE_QUIZ and self.auto_start_quiz:
+            marker_id = self.idle.update(world, now)
+            if marker_id is not None:
+                self.start_quiz(
+                    now,
+                    config=self.selector_configs[marker_id],
+                    marker_id=marker_id,
+                )
         if self.mode == APP_MODE_QUIZ:
             self.quiz.update(world, robot, now)
             if not self.quiz.running and self.quiz.phase == "complete":
+                self.mode = self.config.default_next_mode
+                if self.mode not in APP_MODES:
+                    self.mode = APP_MODE_IDLE
                 self.last_event = "quiz_complete"
 
     def should_run_active_follow(self) -> bool:
-        return self.mode == APP_MODE_ACTIVE
+        return self.mode in {APP_MODE_ACTIVE, APP_MODE_IDLE, APP_MODE_QUIZ}
+
+    def preferred_target_mode(self) -> str | None:
+        if self.mode == APP_MODE_IDLE:
+            return "faces"
+        if self.mode != APP_MODE_QUIZ:
+            return None
+        if self.quiz.phase in {"register_players", "accept_answers", "nudge_missing"}:
+            return "markers"
+        return "faces"
 
     def marker_detection_required(self, target_mode: str) -> bool:
         return target_mode == "markers" or self.mode in {APP_MODE_IDLE, APP_MODE_QUIZ} or self.auto_start_quiz
@@ -719,6 +819,9 @@ class AppController:
             "mode": self.mode,
             "phase": phase,
             "auto_start_quiz": self.auto_start_quiz,
+            "selected_quiz": self.config.name,
+            "selected_marker_id": self.selected_marker_id,
+            "selector_marker_ids": sorted(self.selector_configs),
             "last_event": self.last_event,
         }
 
@@ -756,6 +859,41 @@ def load_quiz_config(
                 merged["speech_clips"] = speech_clips
 
     return quiz_config_from_dict(merged)
+
+
+def load_quiz_selector_configs(
+    runtime_path: str | Path,
+    *,
+    teams_path: str | Path | None = None,
+) -> dict[int, QuizConfig]:
+    runtime_file = Path(runtime_path)
+    runtime_data = _load_mapping_file(runtime_file, "quiz runtime")
+    raw_selectors = runtime_data.get("quiz_selectors", {})
+    if not isinstance(raw_selectors, dict):
+        raise ValueError("quiz runtime quiz_selectors must be a mapping")
+
+    selector_configs: dict[int, QuizConfig] = {}
+    for marker_id_raw, item in raw_selectors.items():
+        marker_id = int(marker_id_raw)
+        if not isinstance(item, dict):
+            raise ValueError(f"quiz selector {marker_id} must be a mapping")
+        quiz_file = item.get("quiz_file")
+        if not quiz_file:
+            raise ValueError(f"quiz selector {marker_id} is missing quiz_file")
+        quiz_path = _resolve_relative_path(runtime_file, str(quiz_file))
+        speech_file = item.get("speech_file")
+        speech_path = (
+            _resolve_relative_path(runtime_file, str(speech_file))
+            if speech_file
+            else None
+        )
+        selector_configs[marker_id] = load_quiz_config(
+            quiz_path,
+            runtime_path=runtime_file,
+            teams_path=teams_path,
+            speech_path=speech_path,
+        )
+    return selector_configs
 
 
 def quiz_config_from_dict(data: dict[str, Any]) -> QuizConfig:
@@ -857,6 +995,13 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value)
     return text or None
+
+
+def _resolve_relative_path(anchor_path: Path, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return anchor_path.parent / path
 
 
 def _load_yaml(path: Path) -> Any:

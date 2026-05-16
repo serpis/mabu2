@@ -1,0 +1,71 @@
+name: Hastquiz_medelsvart
+questions:
+  - text: Vad kallas hästens högsta punkt på ryggen, där man ofta mäter mankhöjd?
+    prompt_clip: hast_med_01.wav
+    choices:
+      A: Manke
+      B: Kors
+    correct: A
+
+  - text: Vilken gångart är snabbast?
+    prompt_clip: hast_med_02.wav
+    choices:
+      A: Trav
+      B: Galopp
+    correct: B
+
+  - text: Vad betyder det oftast om en häst lägger öronen bakåt?
+    prompt_clip: hast_med_03.wav
+    choices:
+      A: Den är irriterad eller varnar
+      B: Den sover djupt
+    correct: A
+
+  - text: Vad kallas utrustningen som sitter på hästens huvud och används med tyglar?
+    prompt_clip: hast_med_04.wav
+    choices:
+      A: Träns
+      B: Grimma
+    correct: A
+
+  - text: Vilket foder är viktigast som bas för de flesta hästar?
+    prompt_clip: hast_med_05.wav
+    choices:
+      A: Grovfoder
+      B: Kraftfoder
+    correct: A
+
+  - text: Vad gör hovslagaren främst?
+    prompt_clip: hast_med_06.wav
+    choices:
+      A: Tar hand om hästens hovar
+      B: Tränar hästen att hoppa
+    correct: A
+
+  - text: Vad kallas en kastrerad hanhäst?
+    prompt_clip: hast_med_07.wav
+    choices:
+      A: Hingst
+      B: Valack
+    correct: B
+
+  - text: Vad är en ponny enligt tävlingsregler oftast baserat på?
+    prompt_clip: hast_med_08.wav
+    choices:
+      A: Hästens mankhöjd
+      B: Hästens färg
+    correct: A
+
+  - text: Vilken del av sadeln sätter ryttaren fötterna i?
+    prompt_clip: hast_med_09.wav
+    choices:
+      A: Stigbyglar
+      B: Nosgrimma
+    correct: A
+
+  - text: Vad betyder det att en häst är halt?
+    prompt_clip: hast_med_10.wav
+    choices:
+      A: Den rör sig ojämnt eller har ont när den går
+      B: Den har blivit törstig
+    correct: A

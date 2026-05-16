@@ -1,6 +1,15 @@
 {
-  "start_marker_id": 7,
   "default_next_mode": "idle",
+  "quiz_selectors": {
+    "8": {
+      "quiz_file": "minecraft_medel.yaml",
+      "speech_file": "minecraft_medel_baked_speech.json"
+    },
+    "9": {
+      "quiz_file": "hast_medel.yaml",
+      "speech_file": "hast_medel_baked_speech.json"
+    }
+  },
   "settings": {
     "stable_start_s": 0.8,
     "stable_registration_s": 0.8,

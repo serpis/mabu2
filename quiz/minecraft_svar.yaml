@@ -1,0 +1,71 @@
+name: Minecraftquiz_svart
+questions:
+  - text: Behöver man blaze powder för att göra ögon av ender?
+    prompt_clip: minecraft_svar_01.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan en hopper flytta föremål in i en kista?
+    prompt_clip: minecraft_svar_02.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan silk touch användas för att få själva glasblocket tillbaka när man hugger glas?
+    prompt_clip: minecraft_svar_03.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan man brygga en potion utan brewing stand?
+    prompt_clip: minecraft_svar_04.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B
+
+  - text: Kan redstone dust leda signal runt hörn?
+    prompt_clip: minecraft_svar_05.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan man laga ett verktyg på ett städ med rätt material?
+    prompt_clip: minecraft_svar_06.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Är ancient debris vanligast högt uppe nära Nether-taket?
+    prompt_clip: minecraft_svar_07.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: B
+
+  - text: Kan man få flinta genom att gräva gravel?
+    prompt_clip: minecraft_svar_08.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan en comparator läsa hur full en kista är?
+    prompt_clip: minecraft_svar_09.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A
+
+  - text: Kan man hitta strongholds med ögon av ender?
+    prompt_clip: minecraft_svar_10.wav
+    choices:
+      A: Ja
+      B: Nej
+    correct: A

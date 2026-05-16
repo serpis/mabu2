@@ -101,8 +101,17 @@ Runtime-regler ligger i en egen fil:
 
 ```json
 {
-  "start_marker_id": 7,
   "default_next_mode": "idle",
+  "quiz_selectors": {
+    "8": {
+      "quiz_file": "minecraft_medel.yaml",
+      "speech_file": "minecraft_medel_baked_speech.json"
+    },
+    "9": {
+      "quiz_file": "hast_medel.yaml",
+      "speech_file": "hast_medel_baked_speech.json"
+    }
+  },
   "settings": {
     "stable_start_s": 0.8,
     "stable_registration_s": 0.8,
@@ -150,8 +159,10 @@ Idle ar en liten stateful komponent:
 ```python
 class IdleBehavior:
     def update(self, world, robot, now) -> AppEvent | None:
-        if world.marker_stable(config.start_marker_id, stable_for=0.8):
-            return AppEvent("start_quiz")
+        if world.marker_stable(8, stable_for=0.8):
+            return AppEvent("start_quiz", quiz="minecraft_medel")
+        if world.marker_stable(9, stable_for=0.8):
+            return AppEvent("start_quiz", quiz="hast_medel")
         robot.ensure_idle(now)
         return None
 ```
@@ -159,9 +170,9 @@ class IdleBehavior:
 Forsta versionen behover bara:
 
 - halla marker-detection aktiv
-- visa `watching_start_marker` i dashboarden
-- trigga `start_quiz` nar startmarkern ar stabil
-- inte skicka vanlig face-follow gaze
+- visa `watching_quiz_selector` i dashboarden nar flera selector-taggar finns
+- trigga vald quiz nar en selector-marker ar stabil, aven fran vanligt startlage
+- folja ansikten i idle medan selector-taggar fortfarande kan starta quiz
 
 ## QuizSession
 
@@ -215,6 +226,9 @@ Regler:
 - efter `initial_timeout_s`, fraga saknade lag: "Aha, men lag tva da, vad
   svarar ni?"
 - efter `nudge_timeout_s`, ga vidare med saknade svar som `None`
+- blicka mot ansikten medan roboten talar och mot markorer under registrering/svarstid
+- efter varje fraga: sag ratt svar och vilka lag som svarade ratt
+- efter sista fragan: las slutstallningen fran lagst poang till hogst
 - `None` ger noll poang
 
 Quizet avslutas med totalpoang och vinnare:

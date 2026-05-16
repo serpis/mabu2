@@ -1,0 +1,71 @@
+name: Hastquiz
+questions:
+  - text: Vad äter hästar helst?
+    prompt_clip: hast_01.wav
+    choices:
+      A: Hö och gräs
+      B: Köttbullar
+    correct: A
+
+  - text: Vad kallas hästens barn?
+    prompt_clip: hast_02.wav
+    choices:
+      A: Föl
+      B: Valp
+    correct: A
+
+  - text: Vad sitter ryttaren oftast på?
+    prompt_clip: hast_03.wav
+    choices:
+      A: Sadel
+      B: Hatthylla
+    correct: A
+
+  - text: Vad har hästen på fötterna?
+    prompt_clip: hast_04.wav
+    choices:
+      A: Hovar
+      B: Tassar
+    correct: A
+
+  - text: Vilket ljud gör en häst?
+    prompt_clip: hast_05.wav
+    choices:
+      A: Gnägga
+      B: Jama
+    correct: A
+
+  - text: Vad använder man tyglar till?
+    prompt_clip: hast_06.wav
+    choices:
+      A: Styra hästen
+      B: Borsta svansen
+    correct: A
+
+  - text: Var brukar hästar bo?
+    prompt_clip: hast_07.wav
+    choices:
+      A: Stall
+      B: Akvarium
+    correct: A
+
+  - text: Vad kallas det när hästen springer riktigt snabbt?
+    prompt_clip: hast_08.wav
+    choices:
+      A: Galopp
+      B: Krypning
+    correct: A
+
+  - text: Vad kan man borsta på hästen?
+    prompt_clip: hast_09.wav
+    choices:
+      A: Manen
+      B: Antennen
+    correct: A
+
+  - text: Vad behöver en häst dricka?
+    prompt_clip: hast_10.wav
+    choices:
+      A: Vatten
+      B: Läsk
+    correct: A
