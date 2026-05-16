@@ -1,5 +1,6 @@
 {
   "default_next_mode": "idle",
+  "repeat_question_marker_id": 20,
   "quiz_selectors": {
     "8": {
       "quiz_file": "minecraft_medel.yaml",
@@ -17,7 +18,7 @@
     "answer_memory_s": 3.0,
     "stable_answer_s": 1.0,
     "initial_timeout_s": 5.0,
-    "nudge_timeout_s": 4.0,
+    "nudge_timeout_s": 6.0,
     "after_prompt_delay_s": 1.0,
     "next_question_delay_s": 1.0
   }

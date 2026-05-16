@@ -21,6 +21,7 @@ def test_config():
         {
             "name": "Testquiz",
             "start_marker_id": 42,
+            "repeat_question_marker_id": 20,
             "settings": {
                 "stable_start_s": 0.8,
                 "stable_registration_s": 0.5,
@@ -244,6 +245,74 @@ class DialogStateTest(unittest.TestCase):
         self.assertEqual(app.quiz.locked_answers["team_2"], None)
         self.assertEqual(app.quiz.scores, {"team_1": 0, "team_2": 0})
 
+    def test_nudge_timeout_starts_after_nudge_speech_finishes(self):
+        config = test_config()
+        app = AppController(config, mode="quiz", auto_start_quiz=False)
+        robot = FakeRobot()
+        builder = WorldStateBuilder(ObservationDecoder(config))
+        app.quiz.running = True
+        app.quiz.phase = "nudge_missing"
+        app.quiz.phase_started_at = 60.0
+        app.quiz.registered_player_ids = ("team_1",)
+        app.quiz.scores = {"team_1": 0}
+        app.quiz.answer_tracker = StableAnswerTracker(
+            ("team_1",),
+            stable_for_s=config.stable_answer_s,
+            answer_memory_s=config.answer_memory_s,
+        )
+        robot.speaking = True
+
+        app.update(builder.update_from_marker_dicts([], 65.0), robot, 65.0)
+        self.assertEqual(app.quiz.phase, "nudge_missing")
+        self.assertIsNone(app.quiz.nudge_listen_started_at)
+
+        robot.speaking = False
+        app.update(builder.update_from_marker_dicts([], 65.1), robot, 65.1)
+        self.assertEqual(app.quiz.nudge_listen_started_at, 65.1)
+        self.assertEqual(app.quiz.phase, "nudge_missing")
+
+        app.update(builder.update_from_marker_dicts([], 66.0), robot, 66.0)
+        self.assertEqual(app.quiz.phase, "nudge_missing")
+
+    def test_repeat_marker_restarts_current_question(self):
+        config = quiz_config_from_dict(
+            {
+                "name": "Testquiz",
+                "repeat_question_marker_id": 20,
+                "settings": {
+                    "stable_start_s": 0.8,
+                    "stable_answer_s": 1.0,
+                },
+                "players": [
+                    {"id": "team_1", "name": "Lag ett", "answers": {"A": 101, "B": 102}},
+                ],
+                "questions": [{"text": "Fraga", "correct": "A", "prompt_clip": "question.wav"}],
+            }
+        )
+        app = AppController(config, mode="quiz", auto_start_quiz=False)
+        robot = FakeRobot()
+        builder = WorldStateBuilder(ObservationDecoder(config))
+        app.quiz.running = True
+        app.quiz.phase = "accept_answers"
+        app.quiz.question_index = 0
+        app.quiz.registered_player_ids = ("team_1",)
+        app.quiz.scores = {"team_1": 0}
+        app.quiz.answer_tracker = StableAnswerTracker(
+            ("team_1",),
+            stable_for_s=config.stable_answer_s,
+            answer_memory_s=config.answer_memory_s,
+        )
+        app.quiz.locked_answers = {"team_1": "A"}
+        repeat_marker = {"id": 20, "visible": True, "marker_id": 20, "center": [10, 20]}
+
+        app.update(builder.update_from_marker_dicts([repeat_marker], 70.0), robot, 70.0)
+        app.update(builder.update_from_marker_dicts([repeat_marker], 70.9), robot, 70.9)
+
+        self.assertEqual(app.quiz.phase, "speaking_question")
+        self.assertEqual(app.quiz.locked_answers, {})
+        self.assertEqual(app.quiz.last_event, "repeated_question")
+        self.assertEqual(robot.spoken, ["question.wav"])
+
     def test_result_speech_names_teams_that_answered_correctly(self):
         config = quiz_config_from_dict(
             {
@@ -342,6 +411,7 @@ class DialogStateTest(unittest.TestCase):
                 json.dumps(
                     {
                         "start_marker_id": 7,
+                        "repeat_question_marker_id": 20,
                         "settings": {"answer_memory_s": 2.5, "stable_answer_s": 1.25},
                     }
                 )
@@ -389,6 +459,7 @@ class DialogStateTest(unittest.TestCase):
 
         self.assertEqual(config.name, "Split quiz")
         self.assertEqual(config.start_marker_id, 7)
+        self.assertEqual(config.repeat_question_marker_id, 20)
         self.assertEqual(config.answer_memory_s, 2.5)
         self.assertEqual(config.stable_answer_s, 1.25)
         self.assertEqual(config.players[0].answers, {"A": 0, "B": 1})

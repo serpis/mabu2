@@ -102,6 +102,7 @@ Runtime-regler ligger i en egen fil:
 ```json
 {
   "default_next_mode": "idle",
+  "repeat_question_marker_id": 20,
   "quiz_selectors": {
     "8": {
       "quiz_file": "minecraft_medel.yaml",
@@ -119,7 +120,7 @@ Runtime-regler ligger i en egen fil:
     "answer_memory_s": 3.0,
     "stable_answer_s": 1.0,
     "initial_timeout_s": 5.0,
-    "nudge_timeout_s": 4.0
+    "nudge_timeout_s": 6.0
   }
 }
 ```
@@ -226,6 +227,7 @@ Regler:
 - efter `initial_timeout_s`, fraga saknade lag: "Aha, men lag tva da, vad
   svarar ni?"
 - efter `nudge_timeout_s`, ga vidare med saknade svar som `None`
+- marker `20` spelar om aktuell fraga och startar om svarstiden fran borjan
 - blicka mot ansikten medan roboten talar och mot markorer under registrering/svarstid
 - efter varje fraga: sag ratt svar och vilka lag som svarade ratt
 - efter sista fragan: las slutstallningen fran lagst poang till hogst

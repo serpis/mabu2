@@ -34,6 +34,7 @@ class QuizQuestion:
 class QuizConfig:
     name: str
     start_marker_id: int | None
+    repeat_question_marker_id: int | None
     players: tuple[PlayerConfig, ...]
     questions: tuple[QuizQuestion, ...]
     stable_start_s: float = 0.8
@@ -334,6 +335,8 @@ class QuizSession:
         self.pending_final_after_result = False
         self.pending_result_clips: list[str] = []
         self.pending_final_clips: list[str] = []
+        self.nudge_listen_started_at: float | None = None
+        self.repeat_marker_latched = False
         self.answer_tracker: StableAnswerTracker | None = None
         self.locked_answers: dict[str, str | None] = {}
         self.missing_players: list[str] = []
@@ -358,6 +361,8 @@ class QuizSession:
         self.pending_final_after_result = False
         self.pending_result_clips = []
         self.pending_final_clips = []
+        self.nudge_listen_started_at = None
+        self.repeat_marker_latched = False
         self.answer_tracker = None
         self.locked_answers = {}
         self.missing_players = []
@@ -374,6 +379,8 @@ class QuizSession:
         self.pending_final_after_result = False
         self.pending_result_clips = []
         self.pending_final_clips = []
+        self.nudge_listen_started_at = None
+        self.repeat_marker_latched = False
         self.answer_tracker = None
         self.last_event = phase
 
@@ -394,6 +401,15 @@ class QuizSession:
         if not self.config.questions:
             self.stop(now, phase="complete")
             self.last_error = "quiz has no questions"
+            return
+
+        if not world.marker_stable(
+            self.config.repeat_question_marker_id,
+            stable_for_s=self.config.stable_start_s,
+            now=now,
+        ):
+            self.repeat_marker_latched = False
+        if self._maybe_repeat_question(world, robot, now):
             return
 
         if self.phase == "register_players":
@@ -463,6 +479,7 @@ class QuizSession:
             self.locked_answers = {}
             self.missing_players = []
             self.nudge_text = None
+            self.nudge_listen_started_at = None
             self.answer_tracker = StableAnswerTracker(
                 self.registered_player_ids,
                 stable_for_s=self.config.stable_answer_s,
@@ -495,6 +512,7 @@ class QuizSession:
             if now - self.phase_started_at >= self.config.initial_timeout_s:
                 self.nudge_text = self._missing_prompt(self.missing_players)
                 self._speak_key(robot, player_subset_speech_key("nudge", self.missing_players))
+                self.nudge_listen_started_at = None
                 self._set_phase("nudge_missing", now)
             return
 
@@ -506,7 +524,11 @@ class QuizSession:
                 if self.answer_tracker.all_locked():
                     self._score_current_question(now, robot)
                     return
-            if now - self.phase_started_at >= self.config.nudge_timeout_s:
+            if robot.is_speaking():
+                return
+            if self.nudge_listen_started_at is None:
+                self.nudge_listen_started_at = now
+            if now - self.nudge_listen_started_at >= self.config.nudge_timeout_s:
                 if self.answer_tracker is not None:
                     self.answer_tracker.lock_missing_as_none()
                     self.locked_answers = self.answer_tracker.locked_answers()
@@ -547,6 +569,37 @@ class QuizSession:
         result = robot.speak_to_group(clip)
         if result.get("ok") is False:
             self.last_error = str(result.get("error") or result.get("status") or "sound failed")
+
+    def _maybe_repeat_question(
+        self,
+        world: WorldState,
+        robot: RobotDialogPort,
+        now: float,
+    ) -> bool:
+        if self.phase not in {"accept_answers", "nudge_missing"}:
+            return False
+        if self.config.repeat_question_marker_id is None or self.repeat_marker_latched:
+            return False
+        if not world.marker_stable(
+            self.config.repeat_question_marker_id,
+            stable_for_s=self.config.stable_start_s,
+            now=now,
+        ):
+            return False
+        self.repeat_marker_latched = True
+        self.locked_answers = {}
+        self.missing_players = []
+        self.nudge_text = None
+        self.nudge_listen_started_at = None
+        self.answer_tracker = StableAnswerTracker(
+            self.registered_player_ids,
+            stable_for_s=self.config.stable_answer_s,
+            answer_memory_s=self.config.answer_memory_s,
+        )
+        self._speak_question(robot)
+        self._set_phase("speaking_question", now)
+        self.last_event = "repeated_question"
+        return True
 
     def _score_current_question(self, now: float, robot: RobotDialogPort) -> None:
         question = self.current_question()
@@ -941,6 +994,7 @@ def quiz_config_from_dict(data: dict[str, Any]) -> QuizConfig:
     return QuizConfig(
         name=str(data.get("name") or data.get("title") or "Robotquiz"),
         start_marker_id=_optional_int(data.get("start_marker_id")),
+        repeat_question_marker_id=_optional_int(data.get("repeat_question_marker_id")),
         players=tuple(players),
         questions=tuple(questions),
         stable_start_s=float(settings.get("stable_start_s", data.get("stable_start_s", 0.8))),
